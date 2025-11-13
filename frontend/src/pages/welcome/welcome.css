@@ -1,0 +1,67 @@
+/* ============================================================================
+   Welcome Page Styles
+   ============================================================================ */
+
+.welcome-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 80vh;
+}
+
+.welcome-card {
+  background: white;
+  padding: 3rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+}
+
+.welcome-card h1 {
+  font-size: 1.8rem;
+  margin-bottom: 1rem;
+  color: #2c3e50;
+}
+
+.welcome-card p {
+  color: #666;
+  margin-bottom: 2rem;
+}
+
+#welcome-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+#welcome-form input {
+  padding: 0.75rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+#welcome-form input:focus {
+  outline: none;
+  border-color: #3498db;
+}
+
+#welcome-form button {
+  padding: 0.75rem;
+  background-color: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+#welcome-form button:hover {
+  background-color: #2980b9;
+}
+

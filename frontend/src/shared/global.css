@@ -1,4 +1,7 @@
-/* Global styles */
+/* ============================================================================
+   Global Styles - Shared across all pages
+   ============================================================================ */
+
 * {
   margin: 0;
   padding: 0;
@@ -45,8 +48,35 @@ header h1 {
   padding: 2rem;
 }
 
-.container {
-  max-width: 1400px;
-  margin: 0 auto;
+/* Common button styles */
+.btn-secondary {
+  padding: 0.5rem 1rem;
+  background-color: #95a5a6;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background-color 0.2s;
+}
+
+.btn-secondary:hover {
+  background-color: #7f8c8d;
+}
+
+/* Common state styles */
+.loading {
+  text-align: center;
+  padding: 3rem;
+  color: #666;
+  font-size: 1.1rem;
+}
+
+.error {
+  background-color: #f8d7da;
+  color: #721c24;
+  padding: 1rem;
+  border-radius: 4px;
+  text-align: center;
 }
 

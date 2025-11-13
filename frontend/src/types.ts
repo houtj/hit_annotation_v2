@@ -83,12 +83,6 @@ export interface Class {
   color: string; // Hex color code: #RRGGBB
 }
 
-/**
- * User record
- */
-export interface User {
-  username: string;
-}
 
 // ============================================================================
 // API Request/Response Types

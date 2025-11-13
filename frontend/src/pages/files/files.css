@@ -1,0 +1,134 @@
+/* ============================================================================
+   Files Page Styles
+   ============================================================================ */
+
+.files-container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.files-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.files-header h2 {
+  font-size: 2rem;
+  color: #2c3e50;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.username {
+  font-weight: 500;
+  color: #555;
+}
+
+/* Statistics Section */
+.stats-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.stat-label {
+  font-size: 0.9rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+/* Files Table */
+.files-table-container {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.files-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.files-table thead {
+  background-color: #f8f9fa;
+}
+
+.files-table th {
+  padding: 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.files-table tbody tr {
+  border-bottom: 1px solid #e0e0e0;
+  transition: background-color 0.2s;
+}
+
+.files-table tbody tr:hover {
+  background-color: #f8f9fa;
+}
+
+.files-table td {
+  padding: 1rem;
+  color: #333;
+}
+
+.filepath {
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.label-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.label-no {
+  background-color: #f8f9fa;
+  color: #666;
+}
+
+.label-manual {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.label-auto {
+  background-color: #d1ecf1;
+  color: #0c5460;
+}
+
+.empty-message {
+  text-align: center;
+  color: #999;
+  padding: 2rem !important;
+}
+

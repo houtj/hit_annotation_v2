@@ -124,14 +124,4 @@ class Class(Base):
     color = Column(String(7), nullable=False)  # Hex color: #RRGGBB
 
 
-class User(Base):
-    """
-    Users table - stores user information
-    
-    Attributes:
-        username: Username (primary key)
-    """
-    __tablename__ = "users"
-
-    username = Column(String(100), primary_key=True)
 
