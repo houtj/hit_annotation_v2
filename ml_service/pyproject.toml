@@ -1,0 +1,20 @@
+[project]
+name = "ml-service"
+version = "0.1.0"
+description = "Machine learning service for DINOv2 training and inference"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "black>=24.0.0",
+    "jupyter>=1.0.0",
+]
