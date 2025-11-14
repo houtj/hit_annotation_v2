@@ -34,6 +34,7 @@ class File(Base):
         filepath: Path to the file on disk (relative to data directory)
         width: Image width in pixels
         height: Image height in pixels
+        feature_path: Path to extracted DINOv3 features (.npy file)
     """
     __tablename__ = "files"
 
@@ -42,6 +43,7 @@ class File(Base):
     filepath = Column(String(512), nullable=False, unique=True)
     width = Column(Integer, nullable=False)
     height = Column(Integer, nullable=False)
+    feature_path = Column(String(512), nullable=False)
 
     # Relationships
     labels = relationship("Label", back_populates="file", cascade="all, delete-orphan")
@@ -126,6 +128,20 @@ class Class(Base):
 
     classname = Column(String(100), primary_key=True)
     color = Column(String(7), nullable=False)  # Hex color: #RRGGBB
+
+
+class Config(Base):
+    """
+    Config table - stores global application configuration
+    
+    Attributes:
+        key: Configuration key (primary key)
+        value: Configuration value as string
+    """
+    __tablename__ = "config"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(String(255), nullable=False)
 
 
 

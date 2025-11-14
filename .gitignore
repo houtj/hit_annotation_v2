@@ -14,4 +14,4 @@ session/
 
 # Data directories
 data
-models
+backend/feature_extraction_model/weights
