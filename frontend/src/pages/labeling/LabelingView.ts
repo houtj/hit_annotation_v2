@@ -16,13 +16,17 @@ let img: HTMLImageElement | null = null;
 let ws: WebSocket | null = null;
 let predictionMask: HTMLImageElement | null = null;
 let predictionOpacity: number = 0.5;
+let showPoints: boolean = true;
+let showPrediction: boolean = true;
 
 export async function renderLabelingView(fileId: number, onBack: () => void): Promise<void> {
   const mainContent = document.getElementById('main-content');
   if (!mainContent) return;
 
-  // Reset prediction mask when changing files
+  // Reset prediction mask and visibility states when changing files
   predictionMask = null;
+  showPoints = true;
+  showPrediction = true;
 
   // Show loading
   mainContent.innerHTML = '<div class="loading">Loading...</div>';
@@ -72,6 +76,18 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
             <div class="classes-section">
               <h3>Classes</h3>
               <div id="classes-list" class="classes-list"></div>
+            </div>
+            
+            <div class="visibility-section">
+              <h3>Display Options</h3>
+              <div class="toggle-controls">
+                <button id="toggle-points-btn" class="toggle-btn active">
+                  <span class="toggle-icon">👁️</span> Show Points
+                </button>
+                <button id="toggle-prediction-btn" class="toggle-btn active">
+                  <span class="toggle-icon">👁️</span> Show Prediction
+                </button>
+              </div>
             </div>
             
             <div class="prediction-section">
@@ -151,19 +167,21 @@ function redrawCanvas() {
   // Draw image (layer 1: bottom)
   ctx.drawImage(img, 0, 0);
   
-  // Draw prediction mask if available (layer 2: above image, below points)
-  if (predictionMask) {
+  // Draw prediction mask if available and visible (layer 2: above image, below points)
+  if (predictionMask && showPrediction) {
     ctx.globalAlpha = predictionOpacity;
     ctx.drawImage(predictionMask, 0, 0, canvas.width, canvas.height);
     ctx.globalAlpha = 1.0;
   }
   
-  // Draw points (layer 3: on top)
-  points.forEach(point => {
-    if (point.x !== undefined && point.y !== undefined) {
-      drawPoint(point.x, point.y, point.color);
-    }
-  });
+  // Draw points if visible (layer 3: on top)
+  if (showPoints) {
+    points.forEach(point => {
+      if (point.x !== undefined && point.y !== undefined) {
+        drawPoint(point.x, point.y, point.color);
+      }
+    });
+  }
   
   // Update point count
   updatePointCount();
@@ -253,6 +271,32 @@ function attachLabelingListeners(onBack: () => void) {
       const value = parseInt((e.target as HTMLInputElement).value);
       predictionOpacity = value / 100;
       opacityValue.textContent = `${value}%`;
+      redrawCanvas();
+    });
+  }
+  
+  // Toggle points visibility
+  const togglePointsBtn = document.getElementById('toggle-points-btn');
+  if (togglePointsBtn) {
+    togglePointsBtn.addEventListener('click', () => {
+      showPoints = !showPoints;
+      togglePointsBtn.classList.toggle('active', showPoints);
+      togglePointsBtn.innerHTML = showPoints 
+        ? '<span class="toggle-icon">👁️</span> Show Points'
+        : '<span class="toggle-icon">🚫</span> Hide Points';
+      redrawCanvas();
+    });
+  }
+  
+  // Toggle prediction visibility
+  const togglePredictionBtn = document.getElementById('toggle-prediction-btn');
+  if (togglePredictionBtn) {
+    togglePredictionBtn.addEventListener('click', () => {
+      showPrediction = !showPrediction;
+      togglePredictionBtn.classList.toggle('active', showPrediction);
+      togglePredictionBtn.innerHTML = showPrediction 
+        ? '<span class="toggle-icon">👁️</span> Show Prediction'
+        : '<span class="toggle-icon">🚫</span> Hide Prediction';
       redrawCanvas();
     });
   }
