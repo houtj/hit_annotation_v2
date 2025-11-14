@@ -34,12 +34,13 @@ import asyncio
 import os
 import sys
 import shutil
+import json
 from pathlib import Path
 from PIL import Image
 import numpy as np
 import torch
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from db.models import Base, File, Class, Config
+from db.models import Base, File, Class, Config, Label
 
 # Add DINOv3 to path
 DINOV3_REPO = Path(__file__).parent / "feature_extraction_model" / "dinov3"
@@ -73,6 +74,67 @@ async def add_file_to_db(session, filename: str, filepath: str, width: int, heig
         feature_path=feature_path,
     )
     session.add(file_record)
+    await session.flush()  # Flush to get the file_id
+    return file_record
+
+
+async def add_label_to_db(session, file_id: int, label_data: list, created_by: str = "imported"):
+    """Add label record to database from imported JSON"""
+    label_record = Label(
+        file_id=file_id,
+        created_by=created_by,
+        label_data=label_data,
+    )
+    session.add(label_record)
+
+
+def find_matching_label_file(image_path: Path, labels_dir: Path) -> Path | None:
+    """
+    Find matching label JSON file for an image
+    
+    Searches for a JSON file with the same stem (filename without extension)
+    in the labels directory, preserving the folder structure.
+    
+    Args:
+        image_path: Path to the image file
+        labels_dir: Root directory containing label JSON files
+    
+    Returns:
+        Path to matching label file, or None if not found
+    """
+    if not labels_dir or not labels_dir.exists():
+        return None
+    
+    # Get the stem (filename without extension)
+    image_stem = image_path.stem
+    
+    # Search for JSON files with matching stem in labels_dir
+    # Try to preserve folder structure first
+    possible_paths = list(labels_dir.rglob(f"{image_stem}.json"))
+    
+    if possible_paths:
+        # If multiple matches, take the first one
+        # (could be enhanced to match folder structure more precisely)
+        return possible_paths[0]
+    
+    return None
+
+
+def load_label_json(label_path: Path) -> list:
+    """Load label data from JSON file"""
+    try:
+        with open(label_path, 'r') as f:
+            label_data = json.load(f)
+        
+        # Validate it's a list
+        if not isinstance(label_data, list):
+            print(f"  ⚠ Invalid label format in {label_path.name}: expected list")
+            return []
+        
+        return label_data
+    except Exception as e:
+        print(f"  ✗ Error loading label {label_path.name}: {e}")
+        return []
 
 
 def load_dinov3_model():
@@ -203,8 +265,16 @@ def convert_image_to_npy(image_path: Path, output_path: Path) -> tuple[bool, int
         return False, 0, 0
 
 
-async def scan_and_process_images(image_dir: Path, formats: list[str]):
-    """Scan directory for images, convert and add to database"""
+async def scan_and_process_images(image_dir: Path, formats: list[str], labels_dir: Path | None = None, max_files: int | None = None):
+    """
+    Scan directory for images, convert and add to database
+    
+    Args:
+        image_dir: Directory containing images
+        formats: List of image file extensions to process
+        labels_dir: Optional directory containing label JSON files
+        max_files: Optional maximum number of files to process (for testing/limiting)
+    """
     # Check if session exists
     session_exists = SESSION_DIR.exists()
     reinit = False
@@ -238,7 +308,16 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
         image_files.extend(image_dir.rglob(f"*.{fmt}"))
         image_files.extend(image_dir.rglob(f"*.{fmt.upper()}"))
     
-    print(f"\nFound {len(image_files)} images")
+    # Sort files for consistent ordering
+    image_files = sorted(image_files)
+    
+    # Apply max_files limit if specified
+    total_found = len(image_files)
+    if max_files and max_files < total_found:
+        image_files = image_files[:max_files]
+        print(f"\nFound {total_found} images (limiting to {max_files})")
+    else:
+        print(f"\nFound {len(image_files)} images")
     
     # Add default classes and config (only if new session)
     if not session_exists or reinit:
@@ -329,6 +408,7 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
     # Process images
     processed = 0
     skipped = 0
+    labels_imported = 0
     async with AsyncSessionLocal() as db_session:
         for img_path in image_files:
             # Create .npy filename (preserve relative structure in filename)
@@ -358,8 +438,18 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
                     # Store paths to database
                     storage_relative = f"storage/input/{npy_filename}"
                     feature_relative = f"storage/features/{feature_filename}"
-                    await add_file_to_db(db_session, img_path.name, storage_relative, width, height, feature_relative)
+                    file_record = await add_file_to_db(db_session, img_path.name, storage_relative, width, height, feature_relative)
                     processed += 1
+                    
+                    # Check for matching label file and import if exists
+                    if labels_dir:
+                        label_path = find_matching_label_file(img_path, labels_dir)
+                        if label_path:
+                            label_data = load_label_json(label_path)
+                            if label_data:
+                                await add_label_to_db(db_session, file_record.id, label_data, created_by="imported")
+                                labels_imported += 1
+                    
                     if processed % 10 == 0:
                         print(f"Processed {processed}/{len(image_files)} images...")
         
@@ -367,6 +457,8 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
     
     await engine.dispose()
     print(f"\n✓ Successfully processed {processed} images")
+    if labels_imported > 0:
+        print(f"✓ Imported {labels_imported} labels")
     if skipped > 0:
         print(f"✓ Skipped {skipped} existing images")
     print(f"✓ Database: {DB_PATH.absolute()}")
@@ -375,7 +467,7 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Initialize annotation session with images"
+        description="Initialize annotation session with images and optional labels"
     )
     parser.add_argument(
         "--image-dir",
@@ -389,6 +481,18 @@ def main():
         required=True,
         help="Comma-separated list of image formats (e.g., jpg,png,jpeg)"
     )
+    parser.add_argument(
+        "--labels-dir",
+        type=str,
+        required=False,
+        help="Optional: Path to directory containing label JSON files"
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        required=False,
+        help="Optional: Maximum number of files to process (useful for testing)"
+    )
     
     args = parser.parse_args()
     
@@ -400,16 +504,28 @@ def main():
     
     formats = [fmt.strip() for fmt in args.formats.split(',')]
     
+    # Parse optional labels directory
+    labels_dir = None
+    if args.labels_dir:
+        labels_dir = Path(args.labels_dir)
+        if not labels_dir.exists():
+            print(f"Warning: Labels directory does not exist: {labels_dir}")
+            labels_dir = None
+    
     print("=" * 60)
     print("INITIALIZING ANNOTATION SESSION")
     print("=" * 60)
     print(f"Image directory: {image_dir.absolute()}")
     print(f"Image formats: {', '.join(formats)}")
+    if labels_dir:
+        print(f"Labels directory: {labels_dir.absolute()}")
+    if args.max_files:
+        print(f"Max files limit: {args.max_files}")
     print(f"Session directory: {SESSION_DIR.absolute()}")
     print("=" * 60)
     
     # Run async processing
-    asyncio.run(scan_and_process_images(image_dir, formats))
+    asyncio.run(scan_and_process_images(image_dir, formats, labels_dir, args.max_files))
     
     print("\n✓ Session initialized successfully!")
 

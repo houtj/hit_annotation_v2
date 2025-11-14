@@ -7,6 +7,11 @@
 cd backend
 uv run python init_session.py --image-dir /path/to/images --formats jpg,png
 uv run python init_session.py --image-dir /Users/houtj/projects/active_annotation/data/img_samples --format jpg
+uv run python init_session.py \
+  --image-dir ../data/hitl_data/condabri_north_349/images \
+  --formats png \
+  --labels-dir ../data/hitl_data/condabri_north_349_point_labels \
+  --max-files 50
 ```
 
 ### Frontend (Development)
