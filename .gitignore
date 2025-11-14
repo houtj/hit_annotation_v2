@@ -8,5 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Session data (generated)
+session/
+
+# Data directories
 data
 models

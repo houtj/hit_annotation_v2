@@ -1,10 +1,14 @@
 """Database connection and session management"""
 
+import os
+from pathlib import Path
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy import event
 from db.models import Base
 
-DATABASE_URL = "sqlite+aiosqlite:///./data/annotations.db"
+# Use session directory for database
+SESSION_DIR = Path(__file__).parent.parent.parent / "session"
+DATABASE_URL = f"sqlite+aiosqlite:///{SESSION_DIR.absolute()}/annotations.db"
 
 # Create async engine
 engine = create_async_engine(

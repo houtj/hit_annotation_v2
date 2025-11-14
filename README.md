@@ -2,6 +2,13 @@
 
 ## Quick Start
 
+### Initialize Session (First Time)
+```bash
+cd backend
+uv run python init_session.py --image-dir /path/to/images --formats jpg,png
+uv run python init_session.py --image-dir /Users/houtj/projects/active_annotation/data/img_samples --format jpg
+```
+
 ### Frontend (Development)
 ```bash
 cd frontend
