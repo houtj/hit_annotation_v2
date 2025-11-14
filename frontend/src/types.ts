@@ -26,6 +26,7 @@ export interface PointLabel {
   color: string;
   x: number;
   y: number;
+  origin: 'human' | 'pred';  // 'human' = user-created, 'pred' = extracted from prediction
 }
 
 /**
@@ -36,6 +37,7 @@ export interface MaskLabel {
   classname: string;
   color: string;
   path: string;
+  origin: 'human' | 'pred';  // 'human' = user-created, 'pred' = extracted from prediction
 }
 
 /**

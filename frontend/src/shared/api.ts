@@ -63,6 +63,7 @@ export interface LabelDataItem {
   x?: number;
   y?: number;
   path?: string;
+  origin?: 'human' | 'pred';  // 'human' = user-created, 'pred' = extracted from prediction
 }
 
 export interface Label {

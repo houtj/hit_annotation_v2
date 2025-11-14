@@ -66,6 +66,7 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
           <div class="left-panel">
             <div class="toolbar">
               <button id="point-mode-btn" class="tool-btn">📍 Point Mode</button>
+              <button id="extract-points-btn" class="tool-btn">🎯 Extract Points</button>
               <button id="save-btn" class="btn-primary">💾 Save</button>
               <button id="stop-btn" class="btn-secondary">⏹ Stop Training</button>
               <span id="point-count" class="point-count">Points: 0</span>
@@ -241,6 +242,12 @@ function attachLabelingListeners(onBack: () => void) {
     pointModeBtn.addEventListener('click', togglePointMode);
   }
   
+  // Extract points button
+  const extractPointsBtn = document.getElementById('extract-points-btn');
+  if (extractPointsBtn) {
+    extractPointsBtn.addEventListener('click', handleExtractPoints);
+  }
+  
   // Save button
   const saveBtn = document.getElementById('save-btn');
   if (saveBtn) {
@@ -357,6 +364,7 @@ function addPoint(x: number, y: number) {
     color: selectedClass.color,
     x: x,
     y: y,
+    origin: 'human',  // Mark as human-created
   });
   
   redrawCanvas();
@@ -461,6 +469,75 @@ async function handleStop() {
   } catch (error) {
     console.error('Failed to stop training:', error);
     alert('Failed to stop training');
+  }
+}
+
+async function handleExtractPoints() {
+  if (!currentFile) return;
+  
+  const username = getUsername();
+  if (!username) return;
+  
+  try {
+    const extractBtn = document.getElementById('extract-points-btn') as HTMLButtonElement;
+    if (extractBtn) {
+      extractBtn.disabled = true;
+      extractBtn.textContent = '🎯 Extracting...';
+    }
+    
+    // Call extract points API
+    const response = await fetch(`/api/files/${currentFile.id}/extract-points?created_by=${encodeURIComponent(username)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      console.log('Points extracted:', data);
+      
+      // Update points array with extracted points
+      points = data.label_data.filter((item: any) => item.type === 'point');
+      
+      // Redraw canvas to show new points
+      redrawCanvas();
+      
+      // Show success message
+      if (extractBtn) {
+        extractBtn.textContent = `✓ Extracted ${data.extracted_count} points`;
+      }
+      
+      // Show details in alert
+      const message = `Points extracted successfully!\n\n` +
+        `New extracted points: ${data.extracted_count}\n` +
+        `Human labels kept: ${data.human_count}\n` +
+        `Old extracted points removed: ${data.removed_count}\n` +
+        `Total points: ${data.total_count}`;
+      alert(message);
+    } else {
+      const error = await response.json();
+      alert(`Failed to extract points: ${error.detail}`);
+      if (extractBtn) {
+        extractBtn.textContent = '🎯 Extract Points';
+      }
+    }
+    
+    if (extractBtn) {
+      setTimeout(() => {
+        extractBtn.textContent = '🎯 Extract Points';
+        extractBtn.disabled = false;
+      }, 2000);
+    }
+  } catch (error) {
+    console.error('Failed to extract points:', error);
+    alert('Failed to extract points');
+    
+    const extractBtn = document.getElementById('extract-points-btn') as HTMLButtonElement;
+    if (extractBtn) {
+      extractBtn.textContent = '🎯 Extract Points';
+      extractBtn.disabled = false;
+    }
   }
 }
 

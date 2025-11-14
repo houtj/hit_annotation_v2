@@ -3,6 +3,30 @@
 Initialize a new annotation session.
 
 Creates session folder structure and populates database with images.
+
+Configuration Parameters (stored in Config table):
+=====================================================
+
+Feature Extraction:
+  - resize: 1536                    # Target size for DINOv3 feature extraction
+
+ML Training:
+  - prediction_interval: 20         # Epochs between predictions
+  - early_stop_patience: 5          # Epochs to wait for improvement
+  - early_stop_threshold: 0.001     # Minimum improvement threshold
+  - training_trigger: 0             # Training control (0=idle, 1=start, 2=stop)
+  - current_file_id: ""             # Currently annotated file ID
+  - model_version: "0.0"            # Current model version (X.X format)
+
+Point Extraction:
+  - max_points: 500                 # Maximum points to extract from prediction
+  - confidence_threshold: 0.15      # Confidence threshold (pixels <0.15 or >0.85)
+  - min_distance: 3.0               # Minimum distance between points (pixels)
+  - gradient_weight: 2.0            # Gradient importance weight (higher=more edges)
+
+Classes:
+  - foreground: #00FF00 (green)
+  - background: #FF0000 (red)
 """
 
 import argparse
@@ -219,34 +243,81 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
     # Add default classes and config (only if new session)
     if not session_exists or reinit:
         async with AsyncSessionLocal() as db_session:
+            # ============================================================
+            # Default Classes
+            # ============================================================
             foreground_class = Class(classname="foreground", color="#00FF00")
             background_class = Class(classname="background", color="#FF0000")
             db_session.add(foreground_class)
             db_session.add(background_class)
             
-            # Add config
+            # ============================================================
+            # Configuration Parameters
+            # ============================================================
+            # All config values are stored as strings in the database
+            
+            # --- Feature Extraction ---
+            # resize: Target size for DINOv3 feature extraction (default: 1536)
+            #         Images are resized with largest side to this value
             resize_config = Config(key="resize", value=str(RESIZE_VALUE))
             db_session.add(resize_config)
             
-            # ML training config
+            # --- ML Training ---
+            # prediction_interval: Number of epochs between predictions (default: 20)
+            #                      Model generates prediction on current file every N epochs
             prediction_interval_config = Config(key="prediction_interval", value="20")
-            early_stop_patience_config = Config(key="early_stop_patience", value="5")
-            early_stop_threshold_config = Config(key="early_stop_threshold", value="0.001")
-            training_trigger_config = Config(key="training_trigger", value="0")
-            current_file_id_config = Config(key="current_file_id", value="")
-            model_version_config = Config(key="model_version", value="0.0")
-            
             db_session.add(prediction_interval_config)
+            
+            # early_stop_patience: Number of epochs to wait for improvement (default: 5)
+            #                      Training stops if test loss doesn't improve for N epochs
+            early_stop_patience_config = Config(key="early_stop_patience", value="5")
             db_session.add(early_stop_patience_config)
+            
+            # early_stop_threshold: Minimum improvement threshold (default: 0.001)
+            #                       Only improvements > threshold count as real improvements
+            early_stop_threshold_config = Config(key="early_stop_threshold", value="0.001")
             db_session.add(early_stop_threshold_config)
+            
+            # training_trigger: Training control flag (default: 0)
+            #                   0 = idle, 1 = start training, 2 = stop training
+            training_trigger_config = Config(key="training_trigger", value="0")
             db_session.add(training_trigger_config)
+            
+            # current_file_id: File currently being annotated (default: "")
+            #                  Used for generating predictions on the right file
+            current_file_id_config = Config(key="current_file_id", value="")
             db_session.add(current_file_id_config)
+            
+            # model_version: Current model version in X.X format (default: "0.0")
+            #                Major version increments on new training, minor on resume
+            model_version_config = Config(key="model_version", value="0.0")
             db_session.add(model_version_config)
+            
+            # --- Point Extraction ---
+            # max_points: Maximum number of points to extract from prediction (default: 500)
+            #             Split equally between foreground and background
+            max_points_config = Config(key="max_points", value="500")
+            db_session.add(max_points_config)
+            
+            # confidence_threshold: Confidence threshold for point extraction (default: 0.15)
+            #                       Only pixels with prob < 0.15 or > 0.85 are considered
+            confidence_threshold_config = Config(key="confidence_threshold", value="0.15")
+            db_session.add(confidence_threshold_config)
+            
+            # min_distance: Minimum distance between extracted points in pixels (default: 3.0)
+            #               Ensures points are spatially distributed
+            min_distance_config = Config(key="min_distance", value="3.0")
+            db_session.add(min_distance_config)
+            
+            # gradient_weight: Weight for gradient-based importance (default: 2.0)
+            #                  Higher values = more points near edges/boundaries
+            gradient_weight_config = Config(key="gradient_weight", value="2.0")
+            db_session.add(gradient_weight_config)
             
             await db_session.commit()
         
         print("Added default classes: foreground, background")
-        print(f"Added config: resize={RESIZE_VALUE}")
+        print(f"Added config: resize={RESIZE_VALUE}, ML training params, point extraction params")
     
     # Load DINOv3 model
     print("\nLoading DINOv3 model...")

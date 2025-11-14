@@ -60,8 +60,9 @@ class Label(Base):
         created_by: User who created/updated the label
         updated_at: Timestamp of last update
         label_data: JSON array of label objects
-            Point label: {"type": "point", "classname": str, "color": str, "x": float, "y": float}
-            Mask label: {"type": "mask", "classname": str, "color": str, "path": str}
+            Point label: {"type": "point", "classname": str, "color": str, "x": float, "y": float, "origin": str}
+            Mask label: {"type": "mask", "classname": str, "color": str, "path": str, "origin": str}
+            Origin values: "human" (user-created), "pred" (extracted from prediction)
     """
     __tablename__ = "labels"
 

@@ -17,6 +17,8 @@ dependencies = [
     "torchvision>=0.15.0",
     "torchmetrics>=1.8.2",
     "termcolor>=3.2.0",
+    "scipy>=1.15.3",
+    "opencv-python>=4.11.0.86",
 ]
 
 [project.optional-dependencies]
