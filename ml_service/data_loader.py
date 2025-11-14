@@ -116,7 +116,7 @@ def map_points_to_feature_coords(
     Map point annotations to feature map coordinates
     
     Args:
-        points: List of point label dicts with keys: x, y, classname
+        points: List of point label dicts with keys: x, y, classname (in pixel coordinates)
         orig_width: Original image width in pixels
         orig_height: Original image height in pixels
         resize: Target resize dimension (default 1536)
@@ -126,10 +126,11 @@ def map_points_to_feature_coords(
         - fy, fx: feature map coordinates
         - class_idx: 1 for foreground, 0 for background
     
-    Coordinate mapping:
-        Original (x, y) in pixels
-        -> Padded image (x_pad, y_pad) after resize
-        -> Feature map (fx, fy) with 16x downsampling
+    Coordinate mapping (matching reference dinov3_training.py):
+        1. Original (x, y) in pixels
+        2. Normalize to [0, 1]: col = x / (orig_width - 1), row = y / (orig_height - 1)
+        3. Scale to resized: x_pad = col * (new_w - 1), y_pad = row * (new_h - 1)
+        4. Feature map: fx = floor(x_pad / 16), fy = floor(y_pad / 16)
     """
     # Calculate scale factor
     scale = resize / max(orig_width, orig_height)
@@ -150,13 +151,17 @@ def map_points_to_feature_coords(
         if x is None or y is None:
             continue
         
-        # Map to padded image coordinates
-        x_pad = x * scale
-        y_pad = y * scale
+        # Normalize pixel coordinates to [0, 1] (matching reference)
+        col = float(x) / max(1, orig_width - 1)
+        row = float(y) / max(1, orig_height - 1)
         
-        # Map to feature coordinates (16x downsampling)
-        fx = int(x_pad / 16)
-        fy = int(y_pad / 16)
+        # Map to padded/resized image coordinates (matching reference)
+        x_pad = col * (new_w - 1)
+        y_pad = row * (new_h - 1)
+        
+        # Map to feature coordinates (16x downsampling, using floor)
+        fx = int(np.floor(x_pad / 16.0))
+        fy = int(np.floor(y_pad / 16.0))
         
         # Calculate feature map dimensions
         feat_w = new_w // 16

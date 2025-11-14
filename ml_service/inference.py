@@ -55,12 +55,30 @@ def predict_full_image(
         prob_map = head(features)  # (1, 1, H, W)
     
     # Remove batch dimension: (1, H, W)
-    prob_map = prob_map.squeeze(0)
+    prob_map = prob_map.squeeze(0).squeeze(0)  # Remove batch and channel dims: (H, W)
     
-    # Upsample to original image resolution
-    # Target size: (orig_height, orig_width)
+    # Calculate resize parameters (matching init_session.py and reference)
+    resize = 1536
+    scale = resize / max(orig_width, orig_height)
+    new_w = (int(orig_width * scale) // 16) * 16
+    new_h = (int(orig_height * scale) // 16) * 16
+    
+    # Crop prob_map to valid region (excluding padding)
+    # Reference: lines 802-807 in dinov3_training.py
+    Fh, Fw = prob_map.shape  # Feature map dimensions (96, 96)
+    image_rows_01 = new_h / max(new_w, new_h)
+    image_cols_01 = new_w / max(new_w, new_h)
+    
+    if image_rows_01 < 1.0:
+        # Image is wider than tall, crop height
+        prob_map = prob_map[: int(Fh * image_rows_01), :]
+    elif image_cols_01 < 1.0:
+        # Image is taller than wide, crop width
+        prob_map = prob_map[:, : int(Fw * image_cols_01)]
+    
+    # Now upsample the cropped prob_map to original image resolution
     prob_map_upsampled = F.interpolate(
-        prob_map.unsqueeze(0),  # Add batch dim: (1, 1, H, W)
+        prob_map.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims: (1, 1, H', W')
         size=(orig_height, orig_width),
         mode='bilinear',
         align_corners=False
