@@ -2,7 +2,7 @@
  * Labeling page view - annotate images with points
  */
 
-import { getFile, getClasses, getImageUrl, saveLabels, type FileDetail, type Class, type LabelDataItem } from '../../shared/api';
+import { getFile, getClasses, getImageUrl, saveLabels, getCurrentVersion, getTrainingMetrics, type FileDetail, type Class, type LabelDataItem } from '../../shared/api';
 import { getUsername } from '../../shared/state';
 
 let currentFile: FileDetail | null = null;
@@ -563,6 +563,22 @@ async function loadPredictionMask(fileId: number) {
 }
 
 function updateTrainingProgress(data: any) {
+  // Check if we received data for a new major version
+  const incomingMajorVersion = parseInt(data.version.split('.')[0]);
+  
+  if (incomingMajorVersion !== currentMajorVersion) {
+    // New major version started - reset chart
+    console.log(`New major version detected: ${incomingMajorVersion} (was ${currentMajorVersion})`);
+    currentMajorVersion = incomingMajorVersion;
+    metricsData = [];
+    
+    if (metricsChart) {
+      metricsChart.data.labels = [];
+      metricsChart.data.datasets[0].data = [];
+      metricsChart.data.datasets[1].data = [];
+    }
+  }
+  
   // Append new data point
   metricsData.push({
     epoch: data.epoch,
@@ -600,26 +616,20 @@ async function tryLoadExistingPrediction(fileId: number) {
 }
 
 async function initializeMetricsChart() {
-  // Get current major version from config
+  // Get current major version from backend
   try {
-    const configResponse = await fetch('/api/training/config', {cache: 'no-store'});
-    if (configResponse.ok) {
-      const config = await configResponse.json();
-      const versionStr = config.model_version || '0.0';
-      currentMajorVersion = parseInt(versionStr.split('.')[0]);
-    }
+    const data = await getCurrentVersion();
+    const versionStr = data.version || '0.0';
+    currentMajorVersion = parseInt(versionStr.split('.')[0]);
   } catch (error) {
     console.log('Could not fetch current version, defaulting to 0');
     currentMajorVersion = 0;
   }
   
-  // Load historical metrics
+  // Load historical metrics for current major version only
   if (currentMajorVersion > 0) {
     try {
-      const metricsResponse = await fetch(`/api/training/metrics/${currentMajorVersion}`, {cache: 'no-store'});
-      if (metricsResponse.ok) {
-        metricsData = await metricsResponse.json();
-      }
+      metricsData = await getTrainingMetrics(currentMajorVersion);
     } catch (error) {
       console.error('Error loading metrics:', error);
       metricsData = [];

@@ -18,10 +18,10 @@ def predict_full_image(
     session_dir: Path,
     version: str,
     device: torch.device,
-    threshold: float = 0.5
+    threshold: float = 0.5  # Not used anymore, kept for API compatibility
 ) -> Path:
     """
-    Generate full-resolution binary mask for an image
+    Generate full-resolution probability map for an image
     
     Args:
         head: Trained segmentation head
@@ -29,16 +29,16 @@ def predict_full_image(
         session_dir: Path to session directory
         version: Model version string (e.g., "1.2")
         device: torch device (cuda or cpu)
-        threshold: Probability threshold for binary classification (default 0.5)
+        threshold: Not used (kept for API compatibility)
     
     Returns:
-        Path to saved prediction mask PNG file
+        Path to saved prediction mask PNG file (grayscale, 0-255 representing probabilities 0-1)
     
     Steps:
         1. Load pre-extracted features (384, 96, 96) from .npy
         2. Pass through head -> (1, 96, 96) probability map
         3. Upsample to original image resolution using bilinear interpolation
-        4. Threshold at 0.5 -> binary mask
+        4. Convert probabilities (0-1) to grayscale (0-255) for smooth visualization
         5. Delete old prediction if exists
         6. Save to session/storage/predictions/file_{file_id}.png
         7. Update Prediction table in database
@@ -84,11 +84,10 @@ def predict_full_image(
         align_corners=False
     ).squeeze(0).squeeze(0)  # Remove batch and channel dims: (orig_height, orig_width)
     
-    # Threshold to get binary mask
-    binary_mask = (prob_map_upsampled > threshold).cpu().numpy().astype(np.uint8)
-    
-    # Convert to 0-255 range for visualization
-    binary_mask_vis = binary_mask * 255
+    # Convert probability map (0-1) to grayscale values (0-255) for visualization
+    # Keep the soft probabilities instead of hard thresholding for smoother edges
+    prob_map_numpy = prob_map_upsampled.cpu().numpy()
+    prob_map_vis = (prob_map_numpy * 255).astype(np.uint8)
     
     # Create predictions directory
     predictions_dir = session_dir / "storage" / "predictions"
@@ -119,7 +118,8 @@ def predict_full_image(
     mask_filename = f"file_{file_id}.png"
     mask_path = predictions_dir / mask_filename
     
-    mask_img = Image.fromarray(binary_mask_vis, mode='L')
+    # Save as grayscale image with soft probabilities
+    mask_img = Image.fromarray(prob_map_vis, mode='L')
     mask_img.save(mask_path)
     
     # Store relative path

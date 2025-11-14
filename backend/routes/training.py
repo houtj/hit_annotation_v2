@@ -25,6 +25,24 @@ class MetricData(BaseModel):
     test_loss: float
 
 
+@router.get("/version")
+async def get_current_version(db: AsyncSession = Depends(get_db)):
+    """
+    Get current model version from config
+    
+    Returns:
+        Dictionary with current version string
+    """
+    query = select(Config).where(Config.key == "model_version")
+    result = await db.execute(query)
+    version_config = result.scalar_one_or_none()
+    
+    if version_config:
+        return {"version": version_config.value}
+    else:
+        return {"version": "0.0"}
+
+
 @router.post("/start", response_model=StartTrainingResponse)
 async def start_training(file_id: int, db: AsyncSession = Depends(get_db)):
     """

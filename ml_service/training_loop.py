@@ -11,6 +11,43 @@ from inference import predict_full_image
 from utils import notify_prediction_ready, send_training_metric
 
 
+def calculate_class_weights(train_data: List[Dict], device: torch.device) -> torch.Tensor:
+    """
+    Calculate class weights based on the frequency of each class (inverse frequency weighting)
+    
+    Args:
+        train_data: List of training samples
+        device: torch device
+    
+    Returns:
+        Tensor of shape (2,) with weights for [background, foreground]
+    """
+    class_counts = torch.zeros(2, dtype=torch.float32)
+    
+    for sample in train_data:
+        points = sample['points']
+        for _, _, class_idx in points:
+            class_counts[class_idx] += 1
+    
+    if class_counts.sum() == 0:
+        return torch.ones(2, device=device)
+    
+    # Inverse frequency weighting: weight = total / (num_classes * count)
+    total_points = class_counts.sum()
+    weights = total_points / (2.0 * class_counts)
+    
+    # Handle zero counts (set weight to 1.0)
+    weights[class_counts == 0] = 1.0
+    
+    # Normalize weights so they sum to num_classes (for stability)
+    weights = weights / weights.mean()
+    
+    print(f"Class distribution: Background={int(class_counts[0])}, Foreground={int(class_counts[1])}")
+    print(f"Class weights: Background={weights[0]:.3f}, Foreground={weights[1]:.3f}")
+    
+    return weights.to(device)
+
+
 def check_stop_signal(db_path: Path) -> bool:
     """
     Check if training should stop
@@ -39,16 +76,18 @@ def train_epoch(
     head: BinarySegmentationHead,
     train_data: List[Dict],
     optimizer: torch.optim.Optimizer,
-    device: torch.device
+    device: torch.device,
+    class_weights: torch.Tensor = None
 ) -> float:
     """
-    Train for one epoch
+    Train for one epoch with optional class balancing
     
     Args:
         head: Segmentation head model
         train_data: List of training samples
         optimizer: Optimizer
         device: torch device
+        class_weights: Optional tensor of shape (2,) with weights for [background, foreground]
     
     Returns:
         Average training loss for the epoch
@@ -71,10 +110,16 @@ def train_epoch(
         # Extract probabilities at point locations
         point_probs = []
         point_targets = []
+        point_weights = []
         
         for fy, fx, class_idx in points:
             point_probs.append(prob_map[fy, fx])
             point_targets.append(float(class_idx))
+            # Assign weight based on class
+            if class_weights is not None:
+                point_weights.append(class_weights[class_idx].item())
+            else:
+                point_weights.append(1.0)
         
         if not point_probs:
             continue
@@ -82,9 +127,10 @@ def train_epoch(
         # Convert to tensors
         point_probs_tensor = torch.stack(point_probs)
         point_targets_tensor = torch.tensor(point_targets, device=device)
+        point_weights_tensor = torch.tensor(point_weights, device=device)
         
-        # Binary cross-entropy loss
-        loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor)
+        # Weighted binary cross-entropy loss
+        loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor, weight=point_weights_tensor)
         
         # Backward pass
         optimizer.zero_grad()
@@ -198,6 +244,9 @@ def train_with_suspension(
     print(f"Prediction interval: {prediction_interval} epochs")
     print(f"Early stop patience: {early_stop_patience}, threshold: {early_stop_threshold}")
     
+    # Calculate class weights for balanced training
+    class_weights = calculate_class_weights(train_data, device)
+    
     for epoch in range(max_epochs):
         # Check for stop signal
         if check_stop_signal(db_path):
@@ -256,8 +305,8 @@ def train_with_suspension(
             
             print(f"  Resuming training...\n")
         
-        # Train one epoch
-        train_loss = train_epoch(head, train_data, optimizer, device)
+        # Train one epoch with class balancing
+        train_loss = train_epoch(head, train_data, optimizer, device, class_weights)
         
         # Validate
         test_loss = validate(head, test_data, device)

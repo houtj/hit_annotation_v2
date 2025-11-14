@@ -130,3 +130,8 @@ export async function getTrainingMetrics(majorVersion: number): Promise<MetricEn
   const timestamp = new Date().getTime();
   return fetchAPI<MetricEntry[]>(`/training/metrics/${majorVersion}?_t=${timestamp}`);
 }
+
+export async function getCurrentVersion(): Promise<{version: string}> {
+  const timestamp = new Date().getTime();
+  return fetchAPI<{version: string}>(`/training/version?_t=${timestamp}`);
+}
