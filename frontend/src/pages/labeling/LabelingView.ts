@@ -14,6 +14,8 @@ let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
 let img: HTMLImageElement | null = null;
 let ws: WebSocket | null = null;
+let wsReconnectTimer: number | null = null;
+let wsActive: boolean = false;  // Flag to track if WebSocket should be active
 let predictionMask: HTMLImageElement | null = null;
 let predictionOpacity: number = 0.5;
 let showPoints: boolean = true;
@@ -126,7 +128,8 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
     // Attach event listeners
     attachLabelingListeners(onBack);
     
-    // Connect WebSocket
+    // Connect WebSocket for real-time updates
+    wsActive = true;  // Mark WebSocket as active
     connectWebSocket();
     
     // Load image
@@ -548,9 +551,21 @@ function escapeHtml(text: string): string {
 }
 
 function connectWebSocket() {
+  // Don't connect if WebSocket is not supposed to be active
+  if (!wsActive) {
+    console.log('WebSocket not active, skipping connection');
+    return;
+  }
+  
   // Close existing connection if any
   if (ws) {
     ws.close();
+  }
+  
+  // Clear any existing reconnection timer
+  if (wsReconnectTimer !== null) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
   }
   
   // Connect to WebSocket
@@ -587,9 +602,34 @@ function connectWebSocket() {
   
   ws.onclose = () => {
     console.log('WebSocket closed');
-    // Attempt to reconnect after 5 seconds
-    setTimeout(connectWebSocket, 5000);
+    // Only attempt reconnection if WebSocket should still be active
+    if (wsActive) {
+      console.log('Reconnecting in 5 seconds...');
+      wsReconnectTimer = window.setTimeout(connectWebSocket, 5000);
+    } else {
+      console.log('WebSocket deactivated, not reconnecting');
+    }
   };
+}
+
+// Cleanup function to close WebSocket when leaving the page
+export function cleanupLabelingView() {
+  // Deactivate WebSocket
+  wsActive = false;
+  
+  // Clear reconnection timer
+  if (wsReconnectTimer !== null) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  
+  // Close WebSocket connection
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+  
+  console.log('Labeling view cleaned up');
 }
 
 async function loadPredictionMask(fileId: number) {

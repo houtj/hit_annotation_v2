@@ -95,6 +95,10 @@ def find_matching_label_file(image_path: Path, labels_dir: Path) -> Path | None:
     Searches for a JSON file with the same stem (filename without extension)
     in the labels directory, preserving the folder structure.
     
+    Handles naming variations:
+    - Exact match: image.png -> image.json
+    - Prefix variation: generated_*.png -> mask_*.json
+    
     Args:
         image_path: Path to the image file
         labels_dir: Root directory containing label JSON files
@@ -108,14 +112,26 @@ def find_matching_label_file(image_path: Path, labels_dir: Path) -> Path | None:
     # Get the stem (filename without extension)
     image_stem = image_path.stem
     
-    # Search for JSON files with matching stem in labels_dir
-    # Try to preserve folder structure first
+    # Try exact stem match first
     possible_paths = list(labels_dir.rglob(f"{image_stem}.json"))
     
     if possible_paths:
-        # If multiple matches, take the first one
-        # (could be enhanced to match folder structure more precisely)
         return possible_paths[0]
+    
+    # Try common naming pattern variations
+    # Pattern: generated_* -> mask_*
+    if image_stem.startswith("generated_"):
+        alternative_stem = image_stem.replace("generated_", "mask_", 1)
+        possible_paths = list(labels_dir.rglob(f"{alternative_stem}.json"))
+        if possible_paths:
+            return possible_paths[0]
+    
+    # Pattern: mask_* -> generated_*
+    if image_stem.startswith("mask_"):
+        alternative_stem = image_stem.replace("mask_", "generated_", 1)
+        possible_paths = list(labels_dir.rglob(f"{alternative_stem}.json"))
+        if possible_paths:
+            return possible_paths[0]
     
     return None
 

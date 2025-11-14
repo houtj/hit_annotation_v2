@@ -3,10 +3,25 @@
 ## Quick Start
 
 ### Initialize Session (First Time)
+
+**Basic usage (images only):**
 ```bash
 cd backend
 uv run python init_session.py --image-dir /path/to/images --formats jpg,png
-uv run python init_session.py --image-dir /Users/houtj/projects/active_annotation/data/img_samples --format jpg
+```
+
+**With labels import:**
+```bash
+cd backend
+uv run python init_session.py \
+  --image-dir ../data/hitl_data/condabri_north_349/images \
+  --formats png \
+  --labels-dir ../data/hitl_data/condabri_north_349_point_labels
+```
+
+**With file limit (useful for testing with large datasets):**
+```bash
+cd backend
 uv run python init_session.py \
   --image-dir ../data/hitl_data/condabri_north_349/images \
   --formats png \

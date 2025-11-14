@@ -5,7 +5,7 @@
 import { isLoggedIn } from './shared/state';
 import { renderWelcomeView, attachWelcomeListeners } from './pages/welcome/WelcomeView';
 import { renderFilesView } from './pages/files/FilesView';
-import { renderLabelingView } from './pages/labeling/LabelingView';
+import { renderLabelingView, cleanupLabelingView } from './pages/labeling/LabelingView';
 import { initializeWebSocket } from './websocket';
 
 console.log('Active Learning Annotation Tool Starting...');
@@ -50,11 +50,15 @@ async function showLabelingPage(fileId: number) {
 
 // Handle file click
 function onFileClick(fileId: number) {
+  // Clean up previous labeling view if navigating from another labeling page
+  cleanupLabelingView();
   showLabelingPage(fileId);
 }
 
 // Handle back to files
 function onBackToFiles() {
+  // Clean up labeling view resources (especially WebSocket)
+  cleanupLabelingView();
   showFilesPage();
 }
 
