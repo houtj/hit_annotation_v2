@@ -295,6 +295,38 @@
   transform: scale(1.1);
 }
 
+/* Training Metrics Display */
+.metrics-display {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.latest-metrics {
+  display: flex;
+  justify-content: space-around;
+  padding: 0.75rem;
+  background: #f8f9fa;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.latest-metrics span {
+  color: #7f8c8d;
+}
+
+.latest-metrics strong {
+  color: #2c3e50;
+  font-size: 1rem;
+  margin-left: 0.25rem;
+}
+
+#metrics-chart {
+  width: 100% !important;
+  height: auto !important;
+  max-height: 200px;
+}
+
 #opacity-slider::-moz-range-thumb {
   width: 18px;
   height: 18px;

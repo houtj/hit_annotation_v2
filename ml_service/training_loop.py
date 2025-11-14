@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model import BinarySegmentationHead
 from inference import predict_full_image
-from utils import notify_prediction_ready
+from utils import notify_prediction_ready, send_training_metric
 
 
 def check_stop_signal(db_path: Path) -> bool:
@@ -261,6 +261,10 @@ def train_with_suspension(
         
         # Validate
         test_loss = validate(head, test_data, device)
+        
+        # Send metrics to backend for storage and WebSocket broadcast
+        version_str = f"{major_version}.{minor_version}"
+        send_training_metric(version_str, epoch, train_loss, test_loss)
         
         # Print progress
         if epoch % 10 == 0 or epoch == max_epochs - 1:

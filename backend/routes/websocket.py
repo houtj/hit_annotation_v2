@@ -78,24 +78,23 @@ async def notify_prediction_ready(file_id: int, version: str = ""):
     })
 
 
-async def notify_training_progress(version: str, epoch: int, loss: float, accuracy: float = None):
+async def notify_training_progress(version: str, epoch: int, train_loss: float, test_loss: float):
     """
     Notify frontend about training progress
     
     Args:
         version: Current model version
         epoch: Current training epoch
-        loss: Training/test loss
-        accuracy: Optional accuracy metric
+        train_loss: Training loss
+        test_loss: Test/validation loss
     """
     message = {
         "type": "training_progress",
         "version": version,
         "epoch": epoch,
-        "loss": loss
+        "train_loss": train_loss,
+        "test_loss": test_loss
     }
-    if accuracy is not None:
-        message["accuracy"] = accuracy
     
     await manager.broadcast(message)
 

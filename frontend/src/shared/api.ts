@@ -115,3 +115,18 @@ export async function saveLabels(
     }),
   });
 }
+
+// ============================================================================
+// Training Metrics API
+// ============================================================================
+
+export interface MetricEntry {
+  epoch: number;
+  train_loss: number;
+  test_loss: number;
+}
+
+export async function getTrainingMetrics(majorVersion: number): Promise<MetricEntry[]> {
+  const timestamp = new Date().getTime();
+  return fetchAPI<MetricEntry[]>(`/training/metrics/${majorVersion}?_t=${timestamp}`);
+}

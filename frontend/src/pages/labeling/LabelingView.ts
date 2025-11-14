@@ -18,6 +18,9 @@ let predictionMask: HTMLImageElement | null = null;
 let predictionOpacity: number = 0.5;
 let showPoints: boolean = true;
 let showPrediction: boolean = true;
+let metricsChart: any = null;
+let metricsData: Array<{epoch: number, train_loss: number, test_loss: number}> = [];
+let currentMajorVersion: number = 0;
 
 export async function renderLabelingView(fileId: number, onBack: () => void): Promise<void> {
   const mainContent = document.getElementById('main-content');
@@ -100,8 +103,12 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
             
             <div class="progress-section">
               <h3>Training Progress</h3>
-              <div class="progress-placeholder">
-                <p>Training not started</p>
+              <div class="metrics-display">
+                <div class="latest-metrics">
+                  <span>Train: <strong id="latest-train">-</strong></span>
+                  <span>Test: <strong id="latest-test">-</strong></span>
+                </div>
+                <canvas id="metrics-chart"></canvas>
               </div>
             </div>
           </div>
@@ -126,6 +133,9 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
     
     // Try to load existing prediction if available
     tryLoadExistingPrediction(fileId);
+    
+    // Initialize metrics chart and load historical data
+    await initializeMetricsChart();
 
   } catch (error) {
     console.error('Failed to load labeling page:', error);
@@ -553,15 +563,26 @@ async function loadPredictionMask(fileId: number) {
 }
 
 function updateTrainingProgress(data: any) {
-  const progressSection = document.querySelector('.progress-section .progress-placeholder');
-  if (progressSection) {
-    progressSection.innerHTML = `
-      <p><strong>Version:</strong> ${data.version}</p>
-      <p><strong>Epoch:</strong> ${data.epoch}</p>
-      <p><strong>Loss:</strong> ${data.loss.toFixed(4)}</p>
-      ${data.accuracy ? `<p><strong>Accuracy:</strong> ${data.accuracy.toFixed(4)}</p>` : ''}
-    `;
+  // Append new data point
+  metricsData.push({
+    epoch: data.epoch,
+    train_loss: data.train_loss,
+    test_loss: data.test_loss
+  });
+  
+  // Update chart
+  if (metricsChart) {
+    metricsChart.data.labels.push(data.epoch);
+    metricsChart.data.datasets[0].data.push(data.train_loss);
+    metricsChart.data.datasets[1].data.push(data.test_loss);
+    metricsChart.update('none'); // Update without animation for real-time
   }
+  
+  // Update text displays
+  const trainEl = document.getElementById('latest-train');
+  const testEl = document.getElementById('latest-test');
+  if (trainEl) trainEl.textContent = data.train_loss.toFixed(4);
+  if (testEl) testEl.textContent = data.test_loss.toFixed(4);
 }
 
 async function tryLoadExistingPrediction(fileId: number) {
@@ -575,6 +596,102 @@ async function tryLoadExistingPrediction(fileId: number) {
   } catch (error) {
     // Silently ignore if no prediction exists yet
     console.log('No existing prediction available');
+  }
+}
+
+async function initializeMetricsChart() {
+  // Get current major version from config
+  try {
+    const configResponse = await fetch('/api/training/config', {cache: 'no-store'});
+    if (configResponse.ok) {
+      const config = await configResponse.json();
+      const versionStr = config.model_version || '0.0';
+      currentMajorVersion = parseInt(versionStr.split('.')[0]);
+    }
+  } catch (error) {
+    console.log('Could not fetch current version, defaulting to 0');
+    currentMajorVersion = 0;
+  }
+  
+  // Load historical metrics
+  if (currentMajorVersion > 0) {
+    try {
+      const metricsResponse = await fetch(`/api/training/metrics/${currentMajorVersion}`, {cache: 'no-store'});
+      if (metricsResponse.ok) {
+        metricsData = await metricsResponse.json();
+      }
+    } catch (error) {
+      console.error('Error loading metrics:', error);
+      metricsData = [];
+    }
+  }
+  
+  // Initialize chart
+  const chartCanvas = document.getElementById('metrics-chart') as HTMLCanvasElement;
+  if (!chartCanvas) return;
+  
+  // Destroy existing chart if any
+  if (metricsChart) {
+    metricsChart.destroy();
+  }
+  
+  // Create new chart using Chart.js
+  // @ts-ignore - Chart is loaded from CDN
+  metricsChart = new Chart(chartCanvas, {
+    type: 'line',
+    data: {
+      labels: metricsData.map(m => m.epoch),
+      datasets: [
+        {
+          label: 'Train Loss',
+          data: metricsData.map(m => m.train_loss),
+          borderColor: '#e74c3c',
+          backgroundColor: 'rgba(231, 76, 60, 0.1)',
+          tension: 0.1,
+        },
+        {
+          label: 'Test Loss',
+          data: metricsData.map(m => m.test_loss),
+          borderColor: '#3498db',
+          backgroundColor: 'rgba(52, 152, 219, 0.1)',
+          tension: 0.1,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      aspectRatio: 2,
+      plugins: {
+        legend: { 
+          position: 'top',
+          labels: { font: { size: 11 } }
+        },
+        title: { 
+          display: false
+        }
+      },
+      scales: {
+        x: { 
+          title: { display: true, text: 'Epoch', font: { size: 11 } },
+          ticks: { font: { size: 10 } }
+        },
+        y: { 
+          title: { display: true, text: 'Loss', font: { size: 11 } },
+          beginAtZero: false,
+          ticks: { font: { size: 10 } }
+        }
+      }
+    }
+  });
+  
+  // Update latest metrics display
+  if (metricsData.length > 0) {
+    const latest = metricsData[metricsData.length - 1];
+    const trainEl = document.getElementById('latest-train');
+    const testEl = document.getElementById('latest-test');
+    if (trainEl) trainEl.textContent = latest.train_loss.toFixed(4);
+    if (testEl) testEl.textContent = latest.test_loss.toFixed(4);
   }
 }
 
