@@ -7,11 +7,12 @@ from typing import List
 
 from db.database import get_db
 from db.models import File, Label, Prediction, ModelVersion
+from utils.label_utils import is_human_labeled
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 
-@router.get("/")
+@router.get("/", response_model=list)
 async def get_files(db: AsyncSession = Depends(get_db)):
     """
     Get all files with their annotation status
@@ -19,6 +20,7 @@ async def get_files(db: AsyncSession = Depends(get_db)):
     Returns:
         List of files with labeled status and labeler information
     """
+    # Disable caching by setting response headers will be handled by middleware
     # Query files with their labels
     query = select(File).order_by(File.filename)
     result = await db.execute(query)
@@ -38,7 +40,7 @@ async def get_files(db: AsyncSession = Depends(get_db)):
         prediction = pred_result.scalar_one_or_none()
         
         # Determine labeled status
-        if label and len(label.label_data) > 0:
+        if is_human_labeled(label):
             labeled = "manual"
             labeler = label.created_by
         elif prediction:
@@ -46,7 +48,7 @@ async def get_files(db: AsyncSession = Depends(get_db)):
             # Get model version from prediction path or latest version
             version_query = select(ModelVersion).where(
                 ModelVersion.status == "completed"
-            ).order_by(ModelVersion.training_end_at.desc())
+            ).order_by(ModelVersion.training_end_at.desc()).limit(1)
             version_result = await db.execute(version_query)
             latest_version = version_result.scalar_one_or_none()
             labeler = f"auto: {latest_version.version}" if latest_version else "auto"
@@ -90,7 +92,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     # Latest model version
     version_query = select(ModelVersion).where(
         ModelVersion.status == "completed"
-    ).order_by(ModelVersion.training_end_at.desc())
+    ).order_by(ModelVersion.training_end_at.desc()).limit(1)
     version_result = await db.execute(version_query)
     latest_version = version_result.scalar_one_or_none()
     

@@ -228,6 +228,21 @@ async def scan_and_process_images(image_dir: Path, formats: list[str]):
             resize_config = Config(key="resize", value=str(RESIZE_VALUE))
             db_session.add(resize_config)
             
+            # ML training config
+            prediction_interval_config = Config(key="prediction_interval", value="20")
+            early_stop_patience_config = Config(key="early_stop_patience", value="5")
+            early_stop_threshold_config = Config(key="early_stop_threshold", value="0.001")
+            training_trigger_config = Config(key="training_trigger", value="0")
+            current_file_id_config = Config(key="current_file_id", value="")
+            model_version_config = Config(key="model_version", value="0.0")
+            
+            db_session.add(prediction_interval_config)
+            db_session.add(early_stop_patience_config)
+            db_session.add(early_stop_threshold_config)
+            db_session.add(training_trigger_config)
+            db_session.add(current_file_id_config)
+            db_session.add(model_version_config)
+            
             await db_session.commit()
         
         print("Added default classes: foreground, background")

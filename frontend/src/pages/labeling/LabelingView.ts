@@ -13,10 +13,16 @@ let isPointMode = false;
 let canvas: HTMLCanvasElement | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
 let img: HTMLImageElement | null = null;
+let ws: WebSocket | null = null;
+let predictionMask: HTMLImageElement | null = null;
+let predictionOpacity: number = 0.5;
 
 export async function renderLabelingView(fileId: number, onBack: () => void): Promise<void> {
   const mainContent = document.getElementById('main-content');
   if (!mainContent) return;
+
+  // Reset prediction mask when changing files
+  predictionMask = null;
 
   // Show loading
   mainContent.innerHTML = '<div class="loading">Loading...</div>';
@@ -54,6 +60,7 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
             <div class="toolbar">
               <button id="point-mode-btn" class="tool-btn">📍 Point Mode</button>
               <button id="save-btn" class="btn-primary">💾 Save</button>
+              <button id="stop-btn" class="btn-secondary">⏹ Stop Training</button>
               <span id="point-count" class="point-count">Points: 0</span>
             </div>
             <div class="canvas-container">
@@ -65,6 +72,14 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
             <div class="classes-section">
               <h3>Classes</h3>
               <div id="classes-list" class="classes-list"></div>
+            </div>
+            
+            <div class="prediction-section">
+              <h3>Prediction Overlay</h3>
+              <div class="opacity-control">
+                <label for="opacity-slider">Opacity: <span id="opacity-value">50%</span></label>
+                <input type="range" id="opacity-slider" min="0" max="100" value="50" />
+              </div>
             </div>
             
             <div class="progress-section">
@@ -87,8 +102,14 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
     // Attach event listeners
     attachLabelingListeners(onBack);
     
+    // Connect WebSocket
+    connectWebSocket();
+    
     // Load image
     await loadImage();
+    
+    // Try to load existing prediction if available
+    tryLoadExistingPrediction(fileId);
 
   } catch (error) {
     console.error('Failed to load labeling page:', error);
@@ -127,10 +148,17 @@ function redrawCanvas() {
   // Clear canvas
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
-  // Draw image
+  // Draw image (layer 1: bottom)
   ctx.drawImage(img, 0, 0);
   
-  // Draw points
+  // Draw prediction mask if available (layer 2: above image, below points)
+  if (predictionMask) {
+    ctx.globalAlpha = predictionOpacity;
+    ctx.drawImage(predictionMask, 0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 1.0;
+  }
+  
+  // Draw points (layer 3: on top)
   points.forEach(point => {
     if (point.x !== undefined && point.y !== undefined) {
       drawPoint(point.x, point.y, point.color);
@@ -191,6 +219,12 @@ function attachLabelingListeners(onBack: () => void) {
     saveBtn.addEventListener('click', handleSave);
   }
   
+  // Stop button
+  const stopBtn = document.getElementById('stop-btn');
+  if (stopBtn) {
+    stopBtn.addEventListener('click', handleStop);
+  }
+  
   // Canvas interactions
   if (canvas) {
     canvas.addEventListener('mousedown', handleCanvasClick);
@@ -208,6 +242,18 @@ function attachLabelingListeners(onBack: () => void) {
         selectedClass = classes.find(c => c.classname === classname) || null;
         renderClasses();
       }
+    });
+  }
+  
+  // Opacity slider
+  const opacitySlider = document.getElementById('opacity-slider') as HTMLInputElement;
+  const opacityValue = document.getElementById('opacity-value');
+  if (opacitySlider && opacityValue) {
+    opacitySlider.addEventListener('input', (e) => {
+      const value = parseInt((e.target as HTMLInputElement).value);
+      predictionOpacity = value / 100;
+      opacityValue.textContent = `${value}%`;
+      redrawCanvas();
     });
   }
 }
@@ -307,10 +353,34 @@ async function handleSave() {
       saveBtn.textContent = '💾 Saving...';
     }
     
+    // Save labels
     await saveLabels(currentFile.id, points, username);
     
+    // Trigger training
+    try {
+      const response = await fetch(`/api/training/start?file_id=${currentFile.id}`, {
+        method: 'POST'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Training started:', data.version);
+        if (saveBtn) {
+          saveBtn.textContent = '✓ Saved & Training';
+        }
+      } else {
+        if (saveBtn) {
+          saveBtn.textContent = '✓ Saved (Training failed)';
+        }
+      }
+    } catch (trainingError) {
+      console.error('Failed to start training:', trainingError);
+      if (saveBtn) {
+        saveBtn.textContent = '✓ Saved (Training failed)';
+      }
+    }
+    
     if (saveBtn) {
-      saveBtn.textContent = '✓ Saved';
       setTimeout(() => {
         saveBtn.textContent = '💾 Save';
         saveBtn.disabled = false;
@@ -322,9 +392,145 @@ async function handleSave() {
   }
 }
 
+async function handleStop() {
+  try {
+    const response = await fetch('/api/training/stop', {
+      method: 'POST'
+    });
+    
+    if (response.ok) {
+      console.log('Training stop signal sent');
+      alert('Training stop signal sent');
+    } else {
+      alert('Failed to send stop signal');
+    }
+  } catch (error) {
+    console.error('Failed to stop training:', error);
+    alert('Failed to stop training');
+  }
+}
+
 function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function connectWebSocket() {
+  // Close existing connection if any
+  if (ws) {
+    ws.close();
+  }
+  
+  // Connect to WebSocket
+  ws = new WebSocket('ws://localhost:8000/ws');
+  
+  ws.onopen = () => {
+    console.log('WebSocket connected');
+  };
+  
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      
+      if (data.type === 'prediction_ready') {
+        // Only load if we're still viewing the same file
+        if (currentFile && data.file_id === currentFile.id) {
+          console.log('Prediction ready for current file, version:', data.version);
+          loadPredictionMask(data.file_id);
+        } else {
+          console.log('Prediction ready for different file, ignoring');
+        }
+      } else if (data.type === 'training_progress') {
+        console.log('Training progress:', data);
+        updateTrainingProgress(data);
+      }
+    } catch (error) {
+      console.error('Error parsing WebSocket message:', error);
+    }
+  };
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+  };
+  
+  ws.onclose = () => {
+    console.log('WebSocket closed');
+    // Attempt to reconnect after 5 seconds
+    setTimeout(connectWebSocket, 5000);
+  };
+}
+
+async function loadPredictionMask(fileId: number) {
+  // Double-check we're still on the same file
+  if (!currentFile || fileId !== currentFile.id) {
+    console.log('File changed, not loading prediction');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/files/${fileId}/prediction`);
+    if (!response.ok) {
+      console.error('Failed to load prediction mask');
+      return;
+    }
+    
+    const blob = await response.blob();
+    const maskImg = new Image();
+    maskImg.src = URL.createObjectURL(blob);
+    
+    maskImg.onload = () => {
+      // Final check: ensure we're still on the same file
+      if (!currentFile || fileId !== currentFile.id) {
+        console.log('File changed during load, discarding prediction');
+        URL.revokeObjectURL(maskImg.src);
+        return;
+      }
+      
+      // Store the prediction mask
+      predictionMask = maskImg;
+      
+      // Redraw canvas with the new prediction
+      redrawCanvas();
+      
+      console.log('Prediction mask loaded and displayed');
+      
+      // Note: Don't revoke the URL yet, we need it for redrawing
+      // It will be cleaned up when a new prediction is loaded
+    };
+    
+    maskImg.onerror = () => {
+      console.error('Error loading prediction mask image');
+      URL.revokeObjectURL(maskImg.src);
+    };
+  } catch (error) {
+    console.error('Error loading prediction mask:', error);
+  }
+}
+
+function updateTrainingProgress(data: any) {
+  const progressSection = document.querySelector('.progress-section .progress-placeholder');
+  if (progressSection) {
+    progressSection.innerHTML = `
+      <p><strong>Version:</strong> ${data.version}</p>
+      <p><strong>Epoch:</strong> ${data.epoch}</p>
+      <p><strong>Loss:</strong> ${data.loss.toFixed(4)}</p>
+      ${data.accuracy ? `<p><strong>Accuracy:</strong> ${data.accuracy.toFixed(4)}</p>` : ''}
+    `;
+  }
+}
+
+async function tryLoadExistingPrediction(fileId: number) {
+  // Try to load existing prediction without throwing errors
+  if (!currentFile || fileId !== currentFile.id) {
+    return;
+  }
+  
+  try {
+    await loadPredictionMask(fileId);
+  } catch (error) {
+    // Silently ignore if no prediction exists yet
+    console.log('No existing prediction available');
+  }
 }
 

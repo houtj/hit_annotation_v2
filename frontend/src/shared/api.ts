@@ -8,6 +8,7 @@ const API_BASE = '/api';
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
+    cache: 'no-store',  // Disable caching to ensure fresh data
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -40,11 +41,15 @@ export interface FileStats {
 }
 
 export async function getFiles(): Promise<FileItem[]> {
-  return fetchAPI<FileItem[]>('/files/');
+  // Add timestamp to prevent caching
+  const timestamp = new Date().getTime();
+  return fetchAPI<FileItem[]>(`/files/?_t=${timestamp}`);
 }
 
 export async function getFileStats(): Promise<FileStats> {
-  return fetchAPI<FileStats>('/files/stats');
+  // Add timestamp to prevent caching
+  const timestamp = new Date().getTime();
+  return fetchAPI<FileStats>(`/files/stats?_t=${timestamp}`);
 }
 
 // ============================================================================
@@ -82,7 +87,9 @@ export interface Class {
 }
 
 export async function getFile(fileId: number): Promise<FileDetail> {
-  return fetchAPI<FileDetail>(`/files/${fileId}`);
+  // Add timestamp to prevent caching
+  const timestamp = new Date().getTime();
+  return fetchAPI<FileDetail>(`/files/${fileId}?_t=${timestamp}`);
 }
 
 export async function getClasses(): Promise<Class[]> {
@@ -90,7 +97,9 @@ export async function getClasses(): Promise<Class[]> {
 }
 
 export function getImageUrl(fileId: number): string {
-  return `${API_BASE}/files/${fileId}/image`;
+  // Add timestamp to prevent caching
+  const timestamp = new Date().getTime();
+  return `${API_BASE}/files/${fileId}/image?_t=${timestamp}`;
 }
 
 export async function saveLabels(

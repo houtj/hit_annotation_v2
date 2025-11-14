@@ -27,17 +27,34 @@ Access at: http://localhost:8000
 ```bash
 cd ml_service
 uv run python train.py
-# or
-uv run python inference.py
 ```
+The ML service runs continuously, polling the database for training triggers. When you click "Save" in the labeling interface, it automatically starts training.
 
 ## Project Structure
 ```
 active_annotation/
-├── frontend/        # TypeScript + Vite
-├── backend/         # FastAPI server
-├── ml_service/      # DINOv2 ML worker
-├── data/            # Database & images
-└── models/          # Saved model checkpoints
+├── frontend/           # TypeScript + Vite frontend
+├── backend/            # FastAPI server
+│   ├── routes/         # API endpoints
+│   ├── db/             # Database models
+│   └── utils/          # Helper functions
+├── ml_service/         # DINOv3 ML training service
+│   ├── model.py        # Binary segmentation head
+│   ├── data_loader.py  # Data loading utilities
+│   ├── training_loop.py # Training with suspension
+│   ├── inference.py    # Prediction generation
+│   └── train.py        # Main training script
+└── session/            # Generated session data (gitignored)
+    ├── annotations.db  # SQLite database
+    ├── storage/        # Images and features
+    └── checkpoints/    # Model checkpoints
 ```
+
+## How It Works
+
+1. **Initialization**: Run `init_session.py` to create database, convert images to `.npy`, and extract DINOv3 features
+2. **Annotation**: Use the web interface to annotate images with point labels (foreground/background)
+3. **Training**: Click "Save" to trigger ML training. The service trains a binary segmentation head on DINOv3 features
+4. **Prediction**: During training, the model periodically generates predictions on the current image
+5. **Iteration**: View predictions overlaid on images, refine labels, and retrain
 

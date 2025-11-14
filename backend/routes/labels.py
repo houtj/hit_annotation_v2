@@ -151,3 +151,40 @@ async def create_or_update_label(
         "updated_at": label.updated_at.isoformat(),
     }
 
+
+@router.get("/files/{file_id}/prediction")
+async def get_prediction(file_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Get prediction mask for a file
+    
+    Returns the latest prediction mask as a PNG image
+    """
+    from db.models import Prediction
+    
+    # Get prediction for this file
+    pred_query = select(Prediction).where(Prediction.file_id == file_id)
+    pred_result = await db.execute(pred_query)
+    prediction = pred_result.scalar_one_or_none()
+    
+    if not prediction:
+        raise HTTPException(status_code=404, detail="No prediction available for this file")
+    
+    # Load prediction mask and return as PNG
+    mask_path = SESSION_DIR / prediction.path
+    if not mask_path.exists():
+        raise HTTPException(status_code=404, detail="Prediction file not found on disk")
+    
+    # Load mask image
+    try:
+        mask_img = Image.open(mask_path)
+        
+        # Convert to PNG bytes
+        img_byte_arr = io.BytesIO()
+        mask_img.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        return Response(content=img_byte_arr.getvalue(), media_type="image/png")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading prediction mask: {str(e)}")
+
