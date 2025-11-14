@@ -47,3 +47,62 @@ export async function getFileStats(): Promise<FileStats> {
   return fetchAPI<FileStats>('/files/stats');
 }
 
+// ============================================================================
+// Labels API
+// ============================================================================
+
+export interface LabelDataItem {
+  type: string;
+  classname: string;
+  color: string;
+  x?: number;
+  y?: number;
+  path?: string;
+}
+
+export interface Label {
+  id: number;
+  label_data: LabelDataItem[];
+  created_by: string;
+  updated_at: string;
+}
+
+export interface FileDetail {
+  id: number;
+  filename: string;
+  filepath: string;
+  width: number;
+  height: number;
+  label: Label | null;
+}
+
+export interface Class {
+  classname: string;
+  color: string;
+}
+
+export async function getFile(fileId: number): Promise<FileDetail> {
+  return fetchAPI<FileDetail>(`/files/${fileId}`);
+}
+
+export async function getClasses(): Promise<Class[]> {
+  return fetchAPI<Class[]>('/classes');
+}
+
+export function getImageUrl(fileId: number): string {
+  return `${API_BASE}/files/${fileId}/image`;
+}
+
+export async function saveLabels(
+  fileId: number,
+  labelData: LabelDataItem[],
+  createdBy: string
+): Promise<Label> {
+  return fetchAPI<Label>(`/files/${fileId}/labels`, {
+    method: 'POST',
+    body: JSON.stringify({
+      label_data: labelData,
+      created_by: createdBy,
+    }),
+  });
+}

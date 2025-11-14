@@ -32,12 +32,16 @@ class File(Base):
         id: Primary key
         filename: Original filename
         filepath: Path to the file on disk (relative to data directory)
+        width: Image width in pixels
+        height: Image height in pixels
     """
     __tablename__ = "files"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     filename = Column(String(255), nullable=False)
     filepath = Column(String(512), nullable=False, unique=True)
+    width = Column(Integer, nullable=False)
+    height = Column(Integer, nullable=False)
 
     # Relationships
     labels = relationship("Label", back_populates="file", cascade="all, delete-orphan")

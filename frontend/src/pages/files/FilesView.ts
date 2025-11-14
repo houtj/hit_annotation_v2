@@ -5,7 +5,7 @@
 import { getUsername, clearUsername } from '../../shared/state';
 import { getFiles, getFileStats, type FileItem, type FileStats } from '../../shared/api';
 
-export async function renderFilesView(onLogout: () => void): Promise<void> {
+export async function renderFilesView(onLogout: () => void, onFileClick: (fileId: number) => void): Promise<void> {
   const mainContent = document.getElementById('main-content');
   if (!mainContent) return;
 
@@ -75,7 +75,7 @@ export async function renderFilesView(onLogout: () => void): Promise<void> {
     `;
 
     // Attach event listeners
-    attachFilesListeners(onLogout);
+    attachFilesListeners(onLogout, onFileClick);
   } catch (error) {
     console.error('Failed to load files:', error);
     mainContent.innerHTML = `
@@ -96,8 +96,8 @@ function renderFileRows(files: FileItem[]): string {
   }
 
   return files.map(file => `
-    <tr>
-      <td>${escapeHtml(file.filename)}</td>
+    <tr class="file-row" data-file-id="${file.id}">
+      <td class="filename-cell">${escapeHtml(file.filename)}</td>
       <td class="filepath">${escapeHtml(file.filepath)}</td>
       <td>
         <span class="label-badge label-${file.labeled}">${file.labeled}</span>
@@ -107,7 +107,7 @@ function renderFileRows(files: FileItem[]): string {
   `).join('');
 }
 
-function attachFilesListeners(onLogout: () => void): void {
+function attachFilesListeners(onLogout: () => void, onFileClick: (fileId: number) => void): void {
   const logoutBtn = document.getElementById('logout-btn');
   
   if (logoutBtn) {
@@ -116,6 +116,17 @@ function attachFilesListeners(onLogout: () => void): void {
       onLogout();
     });
   }
+  
+  // File row click handlers
+  const fileRows = document.querySelectorAll('.file-row');
+  fileRows.forEach(row => {
+    row.addEventListener('click', () => {
+      const fileId = parseInt((row as HTMLElement).dataset.fileId || '0');
+      if (fileId > 0) {
+        onFileClick(fileId);
+      }
+    });
+  });
 }
 
 // Utility function to escape HTML

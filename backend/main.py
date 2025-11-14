@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from db.database import init_db
-from routes import files
+from routes import files, websocket, labels
 
 
 @asynccontextmanager
@@ -35,6 +35,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(files.router)
+app.include_router(labels.router)
+app.include_router(websocket.router)
 
 # Serve static files (for production)
 # app.mount("/", StaticFiles(directory="static", html=True), name="static")

@@ -10,6 +10,9 @@ from db.models import Base
 SESSION_DIR = Path(__file__).parent.parent.parent / "session"
 DATABASE_URL = f"sqlite+aiosqlite:///{SESSION_DIR.absolute()}/annotations.db"
 
+# Export SESSION_DIR for other modules
+__all__ = ['SESSION_DIR', 'get_db', 'init_db']
+
 # Create async engine
 engine = create_async_engine(
     DATABASE_URL,

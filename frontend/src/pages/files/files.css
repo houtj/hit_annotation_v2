@@ -87,8 +87,17 @@
   transition: background-color 0.2s;
 }
 
-.files-table tbody tr:hover {
+.file-row {
+  cursor: pointer;
+}
+
+.file-row:hover {
   background-color: #f8f9fa;
+}
+
+.filename-cell {
+  color: #3498db;
+  font-weight: 500;
 }
 
 .files-table td {
