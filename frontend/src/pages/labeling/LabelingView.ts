@@ -183,9 +183,7 @@ function redrawCanvas() {
   
   // Draw prediction mask if available and visible (layer 2: above image, below points)
   if (predictionMask && showPrediction) {
-    ctx.globalAlpha = predictionOpacity;
-    ctx.drawImage(predictionMask, 0, 0, canvas.width, canvas.height);
-    ctx.globalAlpha = 1.0;
+    drawGreenPredictionMask();
   }
   
   // Draw points if visible (layer 3: on top)
@@ -199,6 +197,62 @@ function redrawCanvas() {
   
   // Update point count
   updatePointCount();
+}
+
+function drawGreenPredictionMask() {
+  if (!canvas || !ctx || !predictionMask) return;
+  
+  // Create an offscreen canvas to process the mask
+  const offscreen = document.createElement('canvas');
+  offscreen.width = canvas.width;
+  offscreen.height = canvas.height;
+  const offscreenCtx = offscreen.getContext('2d');
+  if (!offscreenCtx) return;
+  
+  // Draw the grayscale mask to offscreen canvas
+  offscreenCtx.drawImage(predictionMask, 0, 0, canvas.width, canvas.height);
+  
+  // Get image data
+  const imageData = offscreenCtx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  
+  // Convert grayscale to red-green gradient
+  // Grayscale value (0-255) -> Red (background) to Green (foreground)
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = data[i]; // R channel (grayscale, all channels are same)
+    
+    // Normalize to 0-1 range
+    const intensity = gray / 255.0;
+    
+    // Create red-to-green gradient through white
+    // 0.0 -> Red (255, 0, 0)
+    // 0.5 -> White (255, 255, 255)
+    // 1.0 -> Green (0, 255, 0)
+    let r, g, b;
+    
+    if (intensity < 0.5) {
+      // Red to White (0.0 to 0.5)
+      r = 255;
+      g = Math.floor(intensity * 2 * 255);
+      b = Math.floor(intensity * 2 * 255);
+    } else {
+      // White to Green (0.5 to 1.0)
+      r = Math.floor((1 - intensity) * 2 * 255);
+      g = 255;
+      b = Math.floor((1 - intensity) * 2 * 255);
+    }
+    
+    data[i] = r;     // R
+    data[i + 1] = g; // G
+    data[i + 2] = b; // B
+    data[i + 3] = Math.floor(predictionOpacity * 255); // A: uniform opacity
+  }
+  
+  // Put modified data back
+  offscreenCtx.putImageData(imageData, 0, 0);
+  
+  // Draw the colored mask to main canvas
+  ctx.drawImage(offscreen, 0, 0);
 }
 
 function drawPoint(x: number, y: number, color: string) {
