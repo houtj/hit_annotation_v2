@@ -72,13 +72,15 @@ def check_stop_signal(db_path: Path) -> bool:
     return False
 
 
-def deduplicate_points(
+def deduplicate_masks(
+    label_mask: torch.Tensor,
+    target_mask: torch.Tensor,
     points: List[Tuple[int, int, int]],
     class_weights: torch.Tensor = None,
     verbose: bool = False
-) -> Tuple[List[Tuple[int, int, float, float]], Dict[str, int]]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, int]]:
     """
-    Deduplicate points that map to the same feature coordinate
+    Deduplicate points and update masks to handle conflicts
     
     Handles conflicts when multiple pixel coordinates map to the same feature cell.
     Resolution strategy:
@@ -86,53 +88,55 @@ def deduplicate_points(
     - If labels conflict: use soft label (average of classes) with combined weight
     
     Args:
-        points: List of (fy, fx, class_idx) tuples
+        label_mask: (H, W) bool tensor indicating labeled locations
+        target_mask: (H, W) float tensor with target values
+        points: List of (fy, fx, class_idx) tuples (for conflict detection)
         class_weights: Optional tensor of shape (2,) with weights for [background, foreground]
         verbose: Whether to print deduplication statistics
     
     Returns:
-        Tuple of (deduplicated_points, stats):
-        - deduplicated_points: List of (fy, fx, target, weight) tuples
-            - target: can be soft label in [0, 1]
-            - weight: combined weight for all points at this location
+        Tuple of (label_mask, target_mask, weight_mask, stats):
+        - label_mask: (H, W) bool tensor (potentially updated)
+        - target_mask: (H, W) float tensor (potentially updated with soft labels)
+        - weight_mask: (H, W) float tensor with class-based weights
         - stats: Dict with 'original', 'deduplicated', 'conflicts' counts
     """
     from collections import defaultdict
     
-    # Group points by (fy, fx) coordinate
+    # Group points by (fy, fx) coordinate to detect conflicts
     coord_to_labels = defaultdict(list)
     for fy, fx, class_idx in points:
         coord_to_labels[(fy, fx)].append(class_idx)
     
-    deduplicated = []
+    # Create weight mask
+    H, W = label_mask.shape
+    weight_mask = torch.ones(H, W, dtype=torch.float32, device=label_mask.device)
+    
     num_conflicts = 0
     
+    # Update masks with deduplication and class weights
     for (fy, fx), labels in coord_to_labels.items():
         # Check for conflicts
         if len(set(labels)) > 1:
             num_conflicts += 1
             if verbose:
                 print(f"  Warning: Conflicting labels at ({fy}, {fx}): {labels} -> using soft label {sum(labels)/len(labels):.2f}")
+            # Update target to soft label
+            target_mask[fy, fx] = sum(labels) / len(labels)
         
-        # Calculate target (soft label if conflicting)
-        target = sum(labels) / len(labels)  # Average: 0.0 (all bg), 1.0 (all fg), or 0.5 (mixed)
-        
-        # Calculate combined weight
+        # Set class-based weight
         if class_weights is not None:
             # For soft labels, use weighted average of class weights
-            weight = sum(class_weights[label].item() for label in labels) / len(labels)
-        else:
-            weight = 1.0
-        
-        deduplicated.append((fy, fx, target, weight))
+            weight = sum(class_weights[int(label)].item() for label in labels) / len(labels)
+            weight_mask[fy, fx] = weight
     
     stats = {
         'original': len(points),
-        'deduplicated': len(deduplicated),
+        'deduplicated': len(coord_to_labels),
         'conflicts': num_conflicts
     }
     
-    return deduplicated, stats
+    return label_mask, target_mask, weight_mask, stats
 
 
 def train_epoch(
@@ -145,15 +149,15 @@ def train_epoch(
     accumulation_steps: int = 1
 ) -> float:
     """
-    Train for one epoch with optional class balancing and efficient batching
+    Train for one epoch with vectorized mask-based operations (NO Python loops over points!)
     
     Args:
         head: Segmentation head model
-        train_data: List of training samples
+        train_data: List of training samples (with pre-computed masks)
         optimizer: Optimizer
         device: torch device
         class_weights: Optional tensor of shape (2,) with weights for [background, foreground]
-        batch_size: Number of samples to process in parallel (forward pass batching)
+        batch_size: Number of samples to process in parallel
         accumulation_steps: Gradient accumulation steps (effective batch size = batch_size * accumulation_steps)
     
     Returns:
@@ -163,90 +167,73 @@ def train_epoch(
     total_loss = 0.0
     total_points = 0
     
-    # Process in batches for GPU efficiency
     num_samples = len(train_data)
     
     for batch_start in range(0, num_samples, batch_size):
         batch_end = min(batch_start + batch_size, num_samples)
         batch = train_data[batch_start:batch_end]
         
-        # Collect features and points for the batch
+        # Collect batch data
         batch_features = []
-        batch_points = []
-        batch_indices = []
+        batch_label_masks = []
+        batch_target_masks = []
+        batch_weight_masks = []
         
-        for idx, sample in enumerate(batch):
-            points = sample['points']
-            if not points:
+        for sample in batch:
+            if not sample['points']:
                 continue
             
-            # Deduplicate points
-            deduplicated_points, _ = deduplicate_points(points, class_weights)
-            if not deduplicated_points:
-                continue
+            # Deduplicate and get updated masks
+            label_mask, target_mask, weight_mask, _ = deduplicate_masks(
+                sample['label_mask'].clone(),
+                sample['target_mask'].clone(),
+                sample['points'],
+                class_weights
+            )
             
             batch_features.append(sample['features'])
-            batch_points.append(deduplicated_points)
-            batch_indices.append(idx)
+            batch_label_masks.append(label_mask)
+            batch_target_masks.append(target_mask)
+            batch_weight_masks.append(weight_mask)
         
         if not batch_features:
             continue
         
-        # Stack features into a single batch tensor
-        # Check if features are already on device (from preloading)
+        # Stack into batch tensors
         if batch_features[0].device != device:
-            features_batch = torch.stack(batch_features).to(device)  # (B, 384, H, W)
+            features_batch = torch.stack(batch_features).to(device)
         else:
-            features_batch = torch.stack(batch_features)  # Already on device
+            features_batch = torch.stack(batch_features)
+        
+        label_masks_batch = torch.stack(batch_label_masks).to(device)  # (B, H, W) bool
+        target_masks_batch = torch.stack(batch_target_masks).to(device)  # (B, H, W) float
+        weight_masks_batch = torch.stack(batch_weight_masks).to(device)  # (B, H, W) float
         
         # Forward pass (batched)
         prob_maps = head(features_batch)  # (B, 1, H, W)
         prob_maps = prob_maps.squeeze(1)  # (B, H, W)
         
-        # Compute loss for each sample in the batch
-        batch_loss = 0.0
-        batch_point_count = 0
+        # Vectorized loss computation over entire batch (NO LOOPS!)
+        # Extract only labeled locations using boolean indexing
+        probs_labeled = prob_maps[label_masks_batch]  # (N_total,) where N_total = sum of all labeled points
+        targets_labeled = target_masks_batch[label_masks_batch]  # (N_total,)
+        weights_labeled = weight_masks_batch[label_masks_batch]  # (N_total,)
         
-        for i, (prob_map, deduplicated_points) in enumerate(zip(prob_maps, batch_points)):
-            # Extract probabilities at point locations
-            point_probs = []
-            point_targets = []
-            point_weights = []
-            
-            for fy, fx, target, weight in deduplicated_points:
-                point_probs.append(prob_map[fy, fx])
-                point_targets.append(target)
-                point_weights.append(weight)
-            
-            if not point_probs:
-                continue
-            
-            # Convert to tensors
-            point_probs_tensor = torch.stack(point_probs)
-            point_targets_tensor = torch.tensor(point_targets, device=device)
-            point_weights_tensor = torch.tensor(point_weights, device=device)
-            
-            # Weighted binary cross-entropy loss
-            loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor, weight=point_weights_tensor)
-            
-            batch_loss += loss
-            batch_point_count += len(deduplicated_points)
-        
-        if batch_point_count > 0:
-            # Average loss over batch
-            batch_loss = batch_loss / len(batch_points)
+        if len(probs_labeled) > 0:
+            # Compute weighted BCE loss over all labeled points in batch
+            loss = F.binary_cross_entropy(probs_labeled, targets_labeled, weight=weights_labeled)
             
             # Backward pass with gradient accumulation
-            batch_loss = batch_loss / accumulation_steps
-            batch_loss.backward()
+            loss = loss / accumulation_steps
+            loss.backward()
             
             # Update weights every accumulation_steps
             if (batch_start // batch_size + 1) % accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
             
-            total_loss += batch_loss.item() * batch_point_count * accumulation_steps
-            total_points += batch_point_count
+            total_loss += loss.item() * len(probs_labeled) * accumulation_steps
+            total_points += len(probs_labeled)
     
     # Final optimizer step if there are remaining gradients
     if (num_samples // batch_size) % accumulation_steps != 0:
@@ -285,56 +272,52 @@ def validate(
             batch_end = min(batch_start + batch_size, num_samples)
             batch = test_data[batch_start:batch_end]
             
-            # Collect features and points for the batch
+            # Collect batch data
             batch_features = []
-            batch_points = []
+            batch_label_masks = []
+            batch_target_masks = []
             
             for sample in batch:
-                points = sample['points']
-                if not points:
+                if not sample['points']:
                     continue
                 
-                # Deduplicate points (no class weights for validation)
-                deduplicated_points, _ = deduplicate_points(points, class_weights=None)
-                if not deduplicated_points:
-                    continue
+                # Deduplicate (no class weights for validation)
+                label_mask, target_mask, _, _ = deduplicate_masks(
+                    sample['label_mask'].clone(),
+                    sample['target_mask'].clone(),
+                    sample['points'],
+                    class_weights=None
+                )
                 
                 batch_features.append(sample['features'])
-                batch_points.append(deduplicated_points)
+                batch_label_masks.append(label_mask)
+                batch_target_masks.append(target_mask)
             
             if not batch_features:
                 continue
             
-            # Stack features into a single batch tensor
-            # Check if features are already on device (from preloading)
+            # Stack into batch tensors
             if batch_features[0].device != device:
-                features_batch = torch.stack(batch_features).to(device)  # (B, 384, H, W)
+                features_batch = torch.stack(batch_features).to(device)
             else:
-                features_batch = torch.stack(batch_features)  # Already on device
+                features_batch = torch.stack(batch_features)
+            
+            label_masks_batch = torch.stack(batch_label_masks).to(device)
+            target_masks_batch = torch.stack(batch_target_masks).to(device)
             
             # Forward pass (batched)
             prob_maps = head(features_batch)  # (B, 1, H, W)
             prob_maps = prob_maps.squeeze(1)  # (B, H, W)
             
-            # Compute loss for each sample
-            for prob_map, deduplicated_points in zip(prob_maps, batch_points):
-                point_probs = []
-                point_targets = []
+            # Vectorized loss computation (NO LOOPS!)
+            probs_labeled = prob_maps[label_masks_batch]
+            targets_labeled = target_masks_batch[label_masks_batch]
+            
+            if len(probs_labeled) > 0:
+                loss = F.binary_cross_entropy(probs_labeled, targets_labeled)
                 
-                for fy, fx, target, weight in deduplicated_points:
-                    point_probs.append(prob_map[fy, fx])
-                    point_targets.append(target)
-                
-                if not point_probs:
-                    continue
-                
-                point_probs_tensor = torch.stack(point_probs)
-                point_targets_tensor = torch.tensor(point_targets, device=device)
-                
-                loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor)
-                
-                total_loss += loss.item() * len(deduplicated_points)
-                total_points += len(deduplicated_points)
+                total_loss += loss.item() * len(probs_labeled)
+                total_points += len(probs_labeled)
     
     return total_loss / total_points if total_points > 0 else 0.0
 
@@ -435,7 +418,12 @@ def train_with_suspension(
     total_deduplicated = 0
     total_conflicts = 0
     for sample in train_data:
-        _, stats = deduplicate_points(sample['points'], class_weights)
+        _, _, _, stats = deduplicate_masks(
+            sample['label_mask'],
+            sample['target_mask'],
+            sample['points'],
+            class_weights
+        )
         total_original += stats['original']
         total_deduplicated += stats['deduplicated']
         total_conflicts += stats['conflicts']

@@ -216,13 +216,46 @@ def split_train_test(
     return train_ids, test_ids
 
 
+def create_label_masks(
+    points: List[Tuple[int, int, int]],
+    feat_height: int,
+    feat_width: int
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Create dense masks from sparse point labels for efficient vectorized training
+    
+    Args:
+        points: List of (fy, fx, class_idx) tuples
+        feat_height: Feature map height
+        feat_width: Feature map width
+    
+    Returns:
+        Tuple of (label_mask, target_mask, weight_mask):
+        - label_mask: (H, W) bool tensor, True where labels exist
+        - target_mask: (H, W) float tensor, target values (0 or 1) at labeled locations
+        - weight_mask: (H, W) float tensor, weights at labeled locations (for class balancing)
+    """
+    # Initialize masks (all zeros/False)
+    label_mask = torch.zeros(feat_height, feat_width, dtype=torch.bool)
+    target_mask = torch.zeros(feat_height, feat_width, dtype=torch.float32)
+    weight_mask = torch.ones(feat_height, feat_width, dtype=torch.float32)  # Default weight 1.0
+    
+    # Fill in labeled locations
+    for fy, fx, class_idx in points:
+        label_mask[fy, fx] = True
+        target_mask[fy, fx] = float(class_idx)
+        # Weight will be set during training based on class weights
+    
+    return label_mask, target_mask, weight_mask
+
+
 def load_training_data(
     file_ids: List[int],
     session_dir: Path,
     resize: int = 1536
 ) -> List[Dict]:
     """
-    Load training data for a list of files
+    Load training data for a list of files with pre-computed masks for efficient training
     
     Args:
         file_ids: List of file IDs to load
@@ -233,7 +266,9 @@ def load_training_data(
         List of training sample dictionaries with keys:
         - file_id: int
         - features: torch.Tensor (384, H, W)
-        - points: List[(fy, fx, class_idx)]
+        - points: List[(fy, fx, class_idx)] (kept for compatibility)
+        - label_mask: torch.Tensor (H, W) bool - where labels exist
+        - target_mask: torch.Tensor (H, W) float - target values at labeled locations
         - orig_width: int
         - orig_height: int
     """
@@ -244,6 +279,7 @@ def load_training_data(
         try:
             # Load features
             features, orig_width, orig_height = load_features(file_id, session_dir)
+            feat_height, feat_width = features.shape[1], features.shape[2]
             
             # Load labels
             labels = load_labels(file_id, db_path)
@@ -257,10 +293,18 @@ def load_training_data(
                 # Skip files with no valid point annotations
                 continue
             
+            # Create dense masks from sparse points
+            label_mask, target_mask, weight_mask = create_label_masks(
+                points, feat_height, feat_width
+            )
+            
             training_data.append({
                 'file_id': file_id,
                 'features': features,
-                'points': points,
+                'points': points,  # Keep for deduplication logic
+                'label_mask': label_mask,
+                'target_mask': target_mask,
+                'weight_mask': weight_mask,
                 'orig_width': orig_width,
                 'orig_height': orig_height
             })
