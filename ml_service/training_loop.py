@@ -72,15 +72,80 @@ def check_stop_signal(db_path: Path) -> bool:
     return False
 
 
+def deduplicate_points(
+    points: List[Tuple[int, int, int]],
+    class_weights: torch.Tensor = None,
+    verbose: bool = False
+) -> Tuple[List[Tuple[int, int, float, float]], Dict[str, int]]:
+    """
+    Deduplicate points that map to the same feature coordinate
+    
+    Handles conflicts when multiple pixel coordinates map to the same feature cell.
+    Resolution strategy:
+    - If all labels agree: use that label with combined weight
+    - If labels conflict: use soft label (average of classes) with combined weight
+    
+    Args:
+        points: List of (fy, fx, class_idx) tuples
+        class_weights: Optional tensor of shape (2,) with weights for [background, foreground]
+        verbose: Whether to print deduplication statistics
+    
+    Returns:
+        Tuple of (deduplicated_points, stats):
+        - deduplicated_points: List of (fy, fx, target, weight) tuples
+            - target: can be soft label in [0, 1]
+            - weight: combined weight for all points at this location
+        - stats: Dict with 'original', 'deduplicated', 'conflicts' counts
+    """
+    from collections import defaultdict
+    
+    # Group points by (fy, fx) coordinate
+    coord_to_labels = defaultdict(list)
+    for fy, fx, class_idx in points:
+        coord_to_labels[(fy, fx)].append(class_idx)
+    
+    deduplicated = []
+    num_conflicts = 0
+    
+    for (fy, fx), labels in coord_to_labels.items():
+        # Check for conflicts
+        if len(set(labels)) > 1:
+            num_conflicts += 1
+            if verbose:
+                print(f"  Warning: Conflicting labels at ({fy}, {fx}): {labels} -> using soft label {sum(labels)/len(labels):.2f}")
+        
+        # Calculate target (soft label if conflicting)
+        target = sum(labels) / len(labels)  # Average: 0.0 (all bg), 1.0 (all fg), or 0.5 (mixed)
+        
+        # Calculate combined weight
+        if class_weights is not None:
+            # For soft labels, use weighted average of class weights
+            weight = sum(class_weights[label].item() for label in labels) / len(labels)
+        else:
+            weight = 1.0
+        
+        deduplicated.append((fy, fx, target, weight))
+    
+    stats = {
+        'original': len(points),
+        'deduplicated': len(deduplicated),
+        'conflicts': num_conflicts
+    }
+    
+    return deduplicated, stats
+
+
 def train_epoch(
     head: BinarySegmentationHead,
     train_data: List[Dict],
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    class_weights: torch.Tensor = None
+    class_weights: torch.Tensor = None,
+    batch_size: int = 32,
+    accumulation_steps: int = 1
 ) -> float:
     """
-    Train for one epoch with optional class balancing
+    Train for one epoch with optional class balancing and efficient batching
     
     Args:
         head: Segmentation head model
@@ -88,6 +153,8 @@ def train_epoch(
         optimizer: Optimizer
         device: torch device
         class_weights: Optional tensor of shape (2,) with weights for [background, foreground]
+        batch_size: Number of samples to process in parallel (forward pass batching)
+        accumulation_steps: Gradient accumulation steps (effective batch size = batch_size * accumulation_steps)
     
     Returns:
         Average training loss for the epoch
@@ -96,49 +163,95 @@ def train_epoch(
     total_loss = 0.0
     total_points = 0
     
-    for sample in train_data:
-        features = sample['features'].unsqueeze(0).to(device)  # (1, 384, H, W)
-        points = sample['points']  # List of (fy, fx, class_idx)
+    # Process in batches for GPU efficiency
+    num_samples = len(train_data)
+    
+    for batch_start in range(0, num_samples, batch_size):
+        batch_end = min(batch_start + batch_size, num_samples)
+        batch = train_data[batch_start:batch_end]
         
-        if not points:
+        # Collect features and points for the batch
+        batch_features = []
+        batch_points = []
+        batch_indices = []
+        
+        for idx, sample in enumerate(batch):
+            points = sample['points']
+            if not points:
+                continue
+            
+            # Deduplicate points
+            deduplicated_points, _ = deduplicate_points(points, class_weights)
+            if not deduplicated_points:
+                continue
+            
+            batch_features.append(sample['features'])
+            batch_points.append(deduplicated_points)
+            batch_indices.append(idx)
+        
+        if not batch_features:
             continue
         
-        # Forward pass
-        prob_map = head(features)  # (1, 1, H, W)
-        prob_map = prob_map.squeeze(0).squeeze(0)  # (H, W)
+        # Stack features into a single batch tensor
+        # Check if features are already on device (from preloading)
+        if batch_features[0].device != device:
+            features_batch = torch.stack(batch_features).to(device)  # (B, 384, H, W)
+        else:
+            features_batch = torch.stack(batch_features)  # Already on device
         
-        # Extract probabilities at point locations
-        point_probs = []
-        point_targets = []
-        point_weights = []
+        # Forward pass (batched)
+        prob_maps = head(features_batch)  # (B, 1, H, W)
+        prob_maps = prob_maps.squeeze(1)  # (B, H, W)
         
-        for fy, fx, class_idx in points:
-            point_probs.append(prob_map[fy, fx])
-            point_targets.append(float(class_idx))
-            # Assign weight based on class
-            if class_weights is not None:
-                point_weights.append(class_weights[class_idx].item())
-            else:
-                point_weights.append(1.0)
+        # Compute loss for each sample in the batch
+        batch_loss = 0.0
+        batch_point_count = 0
         
-        if not point_probs:
-            continue
+        for i, (prob_map, deduplicated_points) in enumerate(zip(prob_maps, batch_points)):
+            # Extract probabilities at point locations
+            point_probs = []
+            point_targets = []
+            point_weights = []
+            
+            for fy, fx, target, weight in deduplicated_points:
+                point_probs.append(prob_map[fy, fx])
+                point_targets.append(target)
+                point_weights.append(weight)
+            
+            if not point_probs:
+                continue
+            
+            # Convert to tensors
+            point_probs_tensor = torch.stack(point_probs)
+            point_targets_tensor = torch.tensor(point_targets, device=device)
+            point_weights_tensor = torch.tensor(point_weights, device=device)
+            
+            # Weighted binary cross-entropy loss
+            loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor, weight=point_weights_tensor)
+            
+            batch_loss += loss
+            batch_point_count += len(deduplicated_points)
         
-        # Convert to tensors
-        point_probs_tensor = torch.stack(point_probs)
-        point_targets_tensor = torch.tensor(point_targets, device=device)
-        point_weights_tensor = torch.tensor(point_weights, device=device)
-        
-        # Weighted binary cross-entropy loss
-        loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor, weight=point_weights_tensor)
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
+        if batch_point_count > 0:
+            # Average loss over batch
+            batch_loss = batch_loss / len(batch_points)
+            
+            # Backward pass with gradient accumulation
+            batch_loss = batch_loss / accumulation_steps
+            batch_loss.backward()
+            
+            # Update weights every accumulation_steps
+            if (batch_start // batch_size + 1) % accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            total_loss += batch_loss.item() * batch_point_count * accumulation_steps
+            total_points += batch_point_count
+    
+    # Final optimizer step if there are remaining gradients
+    if (num_samples // batch_size) % accumulation_steps != 0:
         optimizer.step()
-        
-        total_loss += loss.item() * len(points)
-        total_points += len(points)
+        optimizer.zero_grad()
     
     return total_loss / total_points if total_points > 0 else 0.0
 
@@ -146,15 +259,17 @@ def train_epoch(
 def validate(
     head: BinarySegmentationHead,
     test_data: List[Dict],
-    device: torch.device
+    device: torch.device,
+    batch_size: int = 64
 ) -> float:
     """
-    Validate model on test set
+    Validate model on test set with batching
     
     Args:
         head: Segmentation head model
         test_data: List of test samples
         device: torch device
+        batch_size: Batch size for validation (can be larger than training)
     
     Returns:
         Average test loss
@@ -163,33 +278,63 @@ def validate(
     total_loss = 0.0
     total_points = 0
     
+    num_samples = len(test_data)
+    
     with torch.no_grad():
-        for sample in test_data:
-            features = sample['features'].unsqueeze(0).to(device)
-            points = sample['points']
+        for batch_start in range(0, num_samples, batch_size):
+            batch_end = min(batch_start + batch_size, num_samples)
+            batch = test_data[batch_start:batch_end]
             
-            if not points:
+            # Collect features and points for the batch
+            batch_features = []
+            batch_points = []
+            
+            for sample in batch:
+                points = sample['points']
+                if not points:
+                    continue
+                
+                # Deduplicate points (no class weights for validation)
+                deduplicated_points, _ = deduplicate_points(points, class_weights=None)
+                if not deduplicated_points:
+                    continue
+                
+                batch_features.append(sample['features'])
+                batch_points.append(deduplicated_points)
+            
+            if not batch_features:
                 continue
             
-            prob_map = head(features).squeeze(0).squeeze(0)
+            # Stack features into a single batch tensor
+            # Check if features are already on device (from preloading)
+            if batch_features[0].device != device:
+                features_batch = torch.stack(batch_features).to(device)  # (B, 384, H, W)
+            else:
+                features_batch = torch.stack(batch_features)  # Already on device
             
-            point_probs = []
-            point_targets = []
+            # Forward pass (batched)
+            prob_maps = head(features_batch)  # (B, 1, H, W)
+            prob_maps = prob_maps.squeeze(1)  # (B, H, W)
             
-            for fy, fx, class_idx in points:
-                point_probs.append(prob_map[fy, fx])
-                point_targets.append(float(class_idx))
-            
-            if not point_probs:
-                continue
-            
-            point_probs_tensor = torch.stack(point_probs)
-            point_targets_tensor = torch.tensor(point_targets, device=device)
-            
-            loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor)
-            
-            total_loss += loss.item() * len(points)
-            total_points += len(points)
+            # Compute loss for each sample
+            for prob_map, deduplicated_points in zip(prob_maps, batch_points):
+                point_probs = []
+                point_targets = []
+                
+                for fy, fx, target, weight in deduplicated_points:
+                    point_probs.append(prob_map[fy, fx])
+                    point_targets.append(target)
+                
+                if not point_probs:
+                    continue
+                
+                point_probs_tensor = torch.stack(point_probs)
+                point_targets_tensor = torch.tensor(point_targets, device=device)
+                
+                loss = F.binary_cross_entropy(point_probs_tensor, point_targets_tensor)
+                
+                total_loss += loss.item() * len(deduplicated_points)
+                total_points += len(deduplicated_points)
     
     return total_loss / total_points if total_points > 0 else 0.0
 
@@ -206,7 +351,8 @@ def train_with_suspension(
     early_stop_patience: int = 5,
     early_stop_threshold: float = 0.001,
     max_epochs: int = 1000,
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-3,
+    batch_size: int = None
 ) -> Tuple[bool, int, float]:
     """
     Train with periodic suspension for inference
@@ -224,6 +370,7 @@ def train_with_suspension(
         early_stop_threshold: Minimum improvement threshold
         max_epochs: Maximum number of epochs
         learning_rate: Learning rate for optimizer
+        batch_size: Batch size for training (auto-detected if None)
     
     Returns:
         Tuple of (should_stop, final_minor_version, best_test_loss)
@@ -235,17 +382,72 @@ def train_with_suspension(
     
     db_path = session_dir / "annotations.db"
     
+    # Auto-detect batch size based on device
+    if batch_size is None:
+        if device.type == 'cuda':
+            # For CUDA, adjust based on GPU memory
+            try:
+                gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                if gpu_mem_gb >= 80:  # H100 or A100 80GB
+                    batch_size = 128
+                elif gpu_mem_gb >= 40:  # A100 40GB
+                    batch_size = 64
+                elif gpu_mem_gb >= 16:  # V100, RTX 3090
+                    batch_size = 32
+                else:
+                    batch_size = 16
+            except:
+                batch_size = 32
+        elif device.type == 'mps':
+            batch_size = 16  # Apple Silicon - conservative
+        else:
+            batch_size = 8  # CPU - small batch
+    
+    val_batch_size = min(batch_size * 2, 128)  # Validation can use larger batches
+    
     best_test_loss = float('inf')
     patience_counter = 0
     minor_version = 0
     
     print(f"Starting training for version {major_version}.{minor_version}")
     print(f"Train samples: {len(train_data)}, Test samples: {len(test_data)}")
+    print(f"Batch size: {batch_size} (train), {val_batch_size} (validation)")
     print(f"Prediction interval: {prediction_interval} epochs")
     print(f"Early stop patience: {early_stop_patience}, threshold: {early_stop_threshold}")
     
+    # Preload features to GPU if possible (for high-end GPUs)
+    if device.type == 'cuda':
+        try:
+            gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            if gpu_mem_gb >= 40:  # A100/H100 - preload for speed
+                print(f"\nPreloading features to GPU for faster training...")
+                for sample in train_data + test_data:
+                    sample['features'] = sample['features'].to(device)
+                print(f"  Features preloaded to GPU memory")
+        except:
+            pass  # Keep features on CPU if preloading fails
+    
     # Calculate class weights for balanced training
     class_weights = calculate_class_weights(train_data, device)
+    
+    # Diagnostic: Check for point collisions across all training data
+    total_original = 0
+    total_deduplicated = 0
+    total_conflicts = 0
+    for sample in train_data:
+        _, stats = deduplicate_points(sample['points'], class_weights)
+        total_original += stats['original']
+        total_deduplicated += stats['deduplicated']
+        total_conflicts += stats['conflicts']
+    
+    if total_original > total_deduplicated:
+        print(f"\n⚠️  Point Collision Warning:")
+        print(f"  Original points: {total_original}")
+        print(f"  After deduplication: {total_deduplicated} ({total_original - total_deduplicated} duplicates removed)")
+        print(f"  Conflicting labels: {total_conflicts} locations")
+        if total_conflicts > 0:
+            print(f"  (Conflicts resolved using soft labels: average of conflicting classes)")
+        print()
     
     for epoch in range(max_epochs):
         # Check for stop signal
@@ -306,10 +508,10 @@ def train_with_suspension(
             print(f"  Resuming training...\n")
         
         # Train one epoch with class balancing
-        train_loss = train_epoch(head, train_data, optimizer, device, class_weights)
+        train_loss = train_epoch(head, train_data, optimizer, device, class_weights, batch_size)
         
         # Validate
-        test_loss = validate(head, test_data, device)
+        test_loss = validate(head, test_data, device, val_batch_size)
         
         # Send metrics to backend for storage and WebSocket broadcast
         version_str = f"{major_version}.{minor_version}"

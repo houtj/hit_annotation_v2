@@ -160,9 +160,18 @@ def main():
     print(f"Checkpoints: {checkpoint_dir.absolute()}")
     print("=" * 70)
     
-    # Check device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\nDevice: {device}")
+    # Check device with better support for different platforms
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"\nDevice: CUDA ({torch.cuda.get_device_name(0)})")
+        print(f"  GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print(f"\nDevice: MPS (Apple Silicon)")
+    else:
+        device = torch.device("cpu")
+        print(f"\nDevice: CPU")
+        print(f"  Warning: Training on CPU will be very slow!")
     
     # Main polling loop
     print("\nWaiting for training trigger...")
@@ -256,15 +265,21 @@ def main():
             print(f"\nInitializing model...")
             head = BinarySegmentationHead(in_channels=384)
             
+            # Count parameters
+            total_params = sum(p.numel() for p in head.parameters())
+            trainable_params = sum(p.numel() for p in head.parameters() if p.requires_grad)
+            print(f"  Total parameters: {total_params:,}")
+            print(f"  Trainable parameters: {trainable_params:,}")
+            
             # Try to load latest checkpoint for warm start
             latest_checkpoint = checkpoint_dir / "binary_seg_head_latest.pth"
             if latest_checkpoint.exists():
                 try:
-                    head.load_state_dict(torch.load(latest_checkpoint, map_location='cpu'))
+                    head.load_state_dict(torch.load(latest_checkpoint, map_location='cpu'), strict=True)
                     print(f"  Loaded checkpoint: {latest_checkpoint.name}")
                 except Exception as e:
-                    print(f"  Warning: Could not load checkpoint: {e}")
-                    print(f"  Starting from scratch")
+                    print(f"  Warning: Could not load checkpoint (architecture mismatch?): {e}")
+                    print(f"  Starting from scratch with new architecture")
             else:
                 print(f"  Starting from scratch (no checkpoint found)")
             
