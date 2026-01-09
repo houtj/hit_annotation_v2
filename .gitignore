@@ -15,3 +15,5 @@ session/
 # Data directories
 data
 backend/feature_extraction_model/weights
+# macOS files
+.DS_Store
