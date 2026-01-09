@@ -6,14 +6,14 @@
 
 **Basic usage (images only):**
 ```bash
-cd backend
-uv run python init_session.py --image-dir /path/to/images --formats jpg,png
+cd initialization
+PYTHONPATH=.. uv run python init_session.py --image-dir /path/to/images --formats jpg,png
 ```
 
 **With labels import:**
 ```bash
-cd backend
-uv run python init_session.py \
+cd initialization
+PYTHONPATH=.. uv run python init_session.py \
   --image-dir ../data/hitl_data/condabri_north_349/images \
   --formats png \
   --labels-dir ../data/hitl_data/condabri_north_349_point_labels
@@ -21,8 +21,8 @@ uv run python init_session.py \
 
 **With file limit (useful for testing with large datasets):**
 ```bash
-cd backend
-uv run python init_session.py \
+cd initialization
+PYTHONPATH=.. uv run python init_session.py \
   --image-dir ../data/hitl_data/condabri_north_349/images \
   --formats png \
   --labels-dir ../data/hitl_data/condabri_north_349_point_labels \
@@ -39,7 +39,7 @@ Access at: http://localhost:5173
 ### Backend (FastAPI)
 ```bash
 cd backend
-uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+PYTHONPATH=.. uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 Access at: http://localhost:8000
 
@@ -53,12 +53,19 @@ The ML service runs continuously, polling the database for training triggers. Wh
 ## Project Structure
 ```
 active_annotation/
+├── db/                 # Shared database infrastructure
+│   ├── models.py       # SQLAlchemy models
+│   └── database.py     # Database connection
+├── models/             # Shared ML models
+│   ├── dinov3/         # DINOv3 feature extractor
+│   └── weights/        # Pre-trained weights
+├── initialization/     # Setup tooling
+│   └── init_session.py # Session initialization script
 ├── frontend/           # TypeScript + Vite frontend
 ├── backend/            # FastAPI server
 │   ├── routes/         # API endpoints
-│   ├── db/             # Database models
 │   └── utils/          # Helper functions
-├── ml_service/         # DINOv3 ML training service
+├── ml_service/         # ML training service
 │   ├── model.py        # Binary segmentation head
 │   ├── data_loader.py  # Data loading utilities
 │   ├── training_loop.py # Training with suspension

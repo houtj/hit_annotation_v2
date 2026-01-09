@@ -43,10 +43,10 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from db.models import Base, File, Class, Config, Label
 
 # Add DINOv3 to path
-DINOV3_REPO = Path(__file__).parent / "feature_extraction_model" / "dinov3"
+DINOV3_REPO = Path(__file__).parent.parent / "models" / "dinov3"
 sys.path.insert(0, str(DINOV3_REPO))
 
-SESSION_DIR = Path("../session")
+SESSION_DIR = Path(__file__).parent.parent / "session"
 STORAGE_DIR = SESSION_DIR / "storage" / "input"
 FEATURES_DIR = SESSION_DIR / "storage" / "features"
 DB_PATH = SESSION_DIR / "annotations.db"
@@ -157,8 +157,8 @@ def load_dinov3_model():
     """Load DINOv3 model using torch.hub with local source"""
     try:
         # Path to DINOv3 repo and weights
-        dinov3_repo = Path(__file__).parent / "feature_extraction_model" / "dinov3"
-        weights_path = Path(__file__).parent / "feature_extraction_model" / "weights" / "dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+        dinov3_repo = Path(__file__).parent.parent / "models" / "dinov3"
+        weights_path = Path(__file__).parent.parent / "models" / "weights" / "dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
         
         if not dinov3_repo.exists():
             raise FileNotFoundError(f"DINOv3 repo not found at: {dinov3_repo}")
@@ -187,8 +187,8 @@ def load_dinov3_model():
     except Exception as e:
         print(f"Error loading DINOv3 model: {e}")
         print(f"Please ensure DINOv3 repo structure is:")
-        print(f"  backend/feature_extraction_model/dinov3/dinov3/  (code)")
-        print(f"  backend/feature_extraction_model/weights/  (model weights)")
+        print(f"  models/dinov3/dinov3/  (code)")
+        print(f"  models/weights/  (model weights)")
         import traceback
         traceback.print_exc()
         return None, None
