@@ -57,12 +57,23 @@ class Label(Base):
     Attributes:
         id: Primary key
         file_id: Foreign key to files table
-        created_by: User who created/updated the label
+        created_by: User who created/updated the label (or "auto: extracted" for ML-generated labels)
         updated_at: Timestamp of last update
-        label_data: JSON array of label objects
-            Point label: {"type": "point", "classname": str, "color": str, "x": float, "y": float, "origin": str}
-            Mask label: {"type": "mask", "classname": str, "color": str, "path": str, "origin": str}
-            Origin values: "human" (user-created), "pred" (extracted from prediction)
+        label_data: JSON array of label objects. Each object can be one of two types:
+        
+            Point label format:
+            {
+                "type": "point",
+                "classname": str,      # e.g., "tree", "building"
+                "color": str,          # Hex color code, e.g., "#FF5733"
+                "x": float,            # X coordinate in original image space (0.0 to image width)
+                "y": float,            # Y coordinate in original image space (0.0 to image height)
+                "origin": str          # Either "human" (user-created) or "pred" (extracted from ML prediction)
+            }
+            
+            Example: [
+                {"type": "point", "classname": "tree", "color": "#00FF00", "x": 125.5, "y": 200.3, "origin": "human"}
+            ]
     """
     __tablename__ = "labels"
 
@@ -70,7 +81,7 @@ class Label(Base):
     file_id = Column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
     created_by = Column(String(100), nullable=False)
     updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
-    label_data = Column(JSON, nullable=False, default=list)  # List of label dicts
+    label_data = Column(JSON, nullable=False, default=list)
 
     # Relationships
     file = relationship("File", back_populates="labels")
@@ -100,20 +111,39 @@ class ModelVersion(Base):
     Model versions table - tracks ML model training history
     
     Attributes:
-        version: Version string (primary key, e.g., "v1.0", "v1.1")
+        version: Version string (primary key, e.g., "v1.0", "v1.1", "v2.5")
+                 Format: "{major_version}.{epoch}" where major version increments with each training run
         training_start_at: Timestamp when training started
         training_end_at: Timestamp when training completed (null if still training)
-        status: Training status (e.g., "training", "completed", "failed")
-        metrics: JSON object with training metrics (loss, accuracy, etc.)
-        path: Path to the saved model checkpoint
+        status: Training status - one of: "training", "completed", "failed"
+        metrics: JSON array of training metrics, one entry per epoch.
+        
+            Format: Array of metric objects
+            [
+                {
+                    "epoch": int,        # Epoch number (0-indexed)
+                    "train_loss": float, # Training loss for this epoch
+                    "test_loss": float   # Validation/test loss for this epoch
+                },
+                ...
+            ]
+            
+            Example: [
+                {"epoch": 0, "train_loss": 0.523, "test_loss": 0.612},
+                {"epoch": 1, "train_loss": 0.345, "test_loss": 0.401},
+                {"epoch": 2, "train_loss": 0.234, "test_loss": 0.298}
+            ]
+            
+            Note: Metrics are appended incrementally as training progresses
+        path: Path to the saved model checkpoint (relative to session directory)
     """
     __tablename__ = "model_versions"
 
     version = Column(String(50), primary_key=True)
     training_start_at = Column(DateTime, nullable=False, default=func.now())
     training_end_at = Column(DateTime, nullable=True)
-    status = Column(String(50), nullable=False, default="training")  # training, completed, failed
-    metrics = Column(JSON, nullable=True)  # {"loss": 0.123, "accuracy": 0.95, ...}
+    status = Column(String(50), nullable=False, default="training")
+    metrics = Column(JSON, nullable=True)
     path = Column(String(512), nullable=True)
 
 
