@@ -13,34 +13,44 @@ uv sync
 
 ## Usage
 
-Initialize a new annotation session with images:
+All initialization parameters are managed through a YAML configuration file. This makes it easier to manage multiple parameters and ensures reproducibility.
+
+### 1. Copy and edit the configuration template:
 
 ```bash
 cd initialization
-PYTHONPATH=/Users/houtj/projects/active_annotation uv run python init_session.py \
-  --image-dir /path/to/images \
-  --formats png,jpg,jpeg
+cp dip_picking_config.yaml my_project_config.yaml
+# Edit my_project_config.yaml with your settings
 ```
 
-### With existing labels:
+### 2. Run initialization with config file:
 
 ```bash
 cd initialization
 PYTHONPATH=/Users/houtj/projects/active_annotation uv run python init_session.py \
-  --image-dir /path/to/images \
-  --formats png \
-  --labels-dir /path/to/labels
+  --config my_project_config.yaml
 ```
 
-### With file limit (for testing):
+### 3. Override max_files for testing (optional):
 
 ```bash
 cd initialization
 PYTHONPATH=/Users/houtj/projects/active_annotation uv run python init_session.py \
-  --image-dir /path/to/images \
-  --formats png \
+  --config my_project_config.yaml \
   --max-files 10
 ```
+
+## Configuration File
+
+The `dip_picking_config.yaml` file contains all initialization parameters with detailed documentation:
+
+- **Data Paths**: Image directory, formats, labels directory
+- **Feature Extraction**: DINOv3 resize parameter
+- **ML Training**: Prediction interval, early stopping parameters
+- **Point Extraction**: Max points, confidence threshold, spatial distribution
+- **Classes**: Binary segmentation class definitions with colors
+
+See `dip_picking_config.yaml` for detailed documentation on each parameter.
 
 ## What it does
 
@@ -52,9 +62,13 @@ PYTHONPATH=/Users/houtj/projects/active_annotation uv run python init_session.py
    - Stores features in `session/storage/features/`
 4. Populates database (`session/annotations.db`) with:
    - File records
-   - Default classes (foreground, background)
-   - Configuration parameters
-   - Optional: imported labels if `--labels-dir` is provided
+   - Classes (from config or defaults: foreground, background)
+   - Configuration parameters (from config or defaults)
+   - Optional: imported labels if labels directory is provided
+
+## Configuration Parameters
+
+All configuration parameters from the YAML file are stored in the database's `Config` table and can be accessed by the backend and ML service during annotation and training.
 
 ## Dependencies
 
@@ -62,6 +76,7 @@ PYTHONPATH=/Users/houtj/projects/active_annotation uv run python init_session.py
 - DINOv3 (from `../models/dinov3/`)
 - SQLAlchemy (async)
 - Pillow, NumPy
+- PyYAML (for config file parsing)
 
 ## Note
 

@@ -4,8 +4,26 @@ Initialize a new annotation session.
 
 Creates session folder structure and populates database with images.
 
+USAGE:
+======
+    uv run python init_session.py --config dip_picking_config.yaml
+
+Configuration File:
+===================
+All initialization parameters must be specified in a YAML configuration file.
+See dip_picking_config.yaml for a fully documented example for dip picking tasks.
+
+Key configuration sections:
+  - Data Paths: image_dir, formats, labels_dir, max_files
+  - Feature Extraction: resize (DINOv3 target size)
+  - ML Training: prediction_interval, early_stop_patience, early_stop_threshold
+  - Point Extraction: max_points, confidence_threshold, min_distance, gradient_weight
+  - Classes: name and color for each segmentation class
+
 Configuration Parameters (stored in Config table):
-=====================================================
+===================================================
+All parameters from the config file are stored in the database's Config table
+and can be accessed by the backend and ML service during annotation and training.
 
 Feature Extraction:
   - resize: 1536                    # Target size for DINOv3 feature extraction
@@ -24,9 +42,9 @@ Point Extraction:
   - min_distance: 3.0               # Minimum distance between points (pixels)
   - gradient_weight: 2.0            # Gradient importance weight (higher=more edges)
 
-Classes:
-  - foreground: #00FF00 (green)
-  - background: #FF0000 (red)
+Classes (example for dip picking):
+  - foreground: #00FF00 (green)     # Dip reflections/events
+  - background: #FF0000 (red)       # Non-dip areas
 """
 
 import argparse
@@ -35,6 +53,7 @@ import os
 import sys
 import shutil
 import json
+import yaml
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -42,15 +61,23 @@ import torch
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from db.models import Base, File, Class, Config, Label
 
-# Add DINOv3 to path
-DINOV3_REPO = Path(__file__).parent.parent / "models" / "dinov3"
-sys.path.insert(0, str(DINOV3_REPO))
+# Default paths (can be overridden by config file)
+DEFAULT_SESSION_DIR = Path(__file__).parent.parent / "session"
+DEFAULT_DINOV3_REPO = Path(__file__).parent.parent / "models" / "dinov3"
+DEFAULT_WEIGHTS_PATH = Path(__file__).parent.parent / "models" / "weights" / "dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+DEFAULT_RESIZE_VALUE = 1536
 
-SESSION_DIR = Path(__file__).parent.parent / "session"
-STORAGE_DIR = SESSION_DIR / "storage" / "input"
-FEATURES_DIR = SESSION_DIR / "storage" / "features"
-DB_PATH = SESSION_DIR / "annotations.db"
-RESIZE_VALUE = 1536
+# Global variables (set by load_config or defaults)
+SESSION_DIR = DEFAULT_SESSION_DIR
+STORAGE_DIR = DEFAULT_SESSION_DIR / "storage" / "input"
+FEATURES_DIR = DEFAULT_SESSION_DIR / "storage" / "features"
+DB_PATH = DEFAULT_SESSION_DIR / "annotations.db"
+DINOV3_REPO = DEFAULT_DINOV3_REPO
+WEIGHTS_PATH = DEFAULT_WEIGHTS_PATH
+RESIZE_VALUE = DEFAULT_RESIZE_VALUE
+
+# Add DINOv3 to path
+sys.path.insert(0, str(DINOV3_REPO))
 
 
 async def init_database():
@@ -156,21 +183,19 @@ def load_label_json(label_path: Path) -> list:
 def load_dinov3_model():
     """Load DINOv3 model using torch.hub with local source"""
     try:
-        # Path to DINOv3 repo and weights
-        dinov3_repo = Path(__file__).parent.parent / "models" / "dinov3"
-        weights_path = Path(__file__).parent.parent / "models" / "weights" / "dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+        global DINOV3_REPO, WEIGHTS_PATH
         
-        if not dinov3_repo.exists():
-            raise FileNotFoundError(f"DINOv3 repo not found at: {dinov3_repo}")
-        if not weights_path.exists():
-            raise FileNotFoundError(f"Weights not found at: {weights_path}")
+        if not DINOV3_REPO.exists():
+            raise FileNotFoundError(f"DINOv3 repo not found at: {DINOV3_REPO}")
+        if not WEIGHTS_PATH.exists():
+            raise FileNotFoundError(f"Weights not found at: {WEIGHTS_PATH}")
         
         # Load model using torch.hub with local source
         model = torch.hub.load(
-            repo_or_dir=str(dinov3_repo),
+            repo_or_dir=str(DINOV3_REPO),
             model='dinov3_vits16',
             source='local',
-            weights=str(weights_path)
+            weights=str(WEIGHTS_PATH)
         )
         
         # Set to eval mode and freeze parameters
@@ -281,7 +306,15 @@ def convert_image_to_npy(image_path: Path, output_path: Path) -> tuple[bool, int
         return False, 0, 0
 
 
-async def scan_and_process_images(image_dir: Path, formats: list[str], labels_dir: Path | None = None, max_files: int | None = None):
+async def scan_and_process_images(
+    image_dir: Path, 
+    formats: list[str], 
+    labels_dir: Path | None = None, 
+    max_files: int | None = None,
+    classes: list[dict] | None = None,
+    ml_config: dict | None = None,
+    point_config: dict | None = None
+):
     """
     Scan directory for images, convert and add to database
     
@@ -339,79 +372,79 @@ async def scan_and_process_images(image_dir: Path, formats: list[str], labels_di
     if not session_exists or reinit:
         async with AsyncSessionLocal() as db_session:
             # ============================================================
-            # Default Classes
+            # Classes (from config or defaults)
             # ============================================================
-            foreground_class = Class(classname="foreground", color="#00FF00")
-            background_class = Class(classname="background", color="#FF0000")
-            db_session.add(foreground_class)
-            db_session.add(background_class)
+            if classes is None:
+                classes = [
+                    {"name": "foreground", "color": "#00FF00"},
+                    {"name": "background", "color": "#FF0000"}
+                ]
+            
+            for cls in classes:
+                class_record = Class(classname=cls["name"], color=cls["color"])
+                db_session.add(class_record)
             
             # ============================================================
-            # Configuration Parameters
+            # Configuration Parameters (from config or defaults)
             # ============================================================
             # All config values are stored as strings in the database
             
             # --- Feature Extraction ---
-            # resize: Target size for DINOv3 feature extraction (default: 1536)
-            #         Images are resized with largest side to this value
             resize_config = Config(key="resize", value=str(RESIZE_VALUE))
             db_session.add(resize_config)
             
-            # --- ML Training ---
-            # prediction_interval: Number of epochs between predictions (default: 20)
-            #                      Model generates prediction on current file every N epochs
-            prediction_interval_config = Config(key="prediction_interval", value="20")
+            # --- ML Training (with defaults) ---
+            if ml_config is None:
+                ml_config = {
+                    "prediction_interval": 20,
+                    "early_stop_patience": 5,
+                    "early_stop_threshold": 0.001
+                }
+            
+            prediction_interval_config = Config(key="prediction_interval", value=str(ml_config["prediction_interval"]))
             db_session.add(prediction_interval_config)
             
-            # early_stop_patience: Number of epochs to wait for improvement (default: 5)
-            #                      Training stops if test loss doesn't improve for N epochs
-            early_stop_patience_config = Config(key="early_stop_patience", value="5")
+            early_stop_patience_config = Config(key="early_stop_patience", value=str(ml_config["early_stop_patience"]))
             db_session.add(early_stop_patience_config)
             
-            # early_stop_threshold: Minimum improvement threshold (default: 0.001)
-            #                       Only improvements > threshold count as real improvements
-            early_stop_threshold_config = Config(key="early_stop_threshold", value="0.001")
+            early_stop_threshold_config = Config(key="early_stop_threshold", value=str(ml_config["early_stop_threshold"]))
             db_session.add(early_stop_threshold_config)
             
-            # training_trigger: Training control flag (default: 0)
-            #                   0 = idle, 1 = start training, 2 = stop training
+            # Training control parameters (always default)
             training_trigger_config = Config(key="training_trigger", value="0")
             db_session.add(training_trigger_config)
             
-            # current_file_id: File currently being annotated (default: "")
-            #                  Used for generating predictions on the right file
             current_file_id_config = Config(key="current_file_id", value="")
             db_session.add(current_file_id_config)
             
-            # model_version: Current model version in X.X format (default: "0.0")
-            #                Major version increments on new training, minor on resume
             model_version_config = Config(key="model_version", value="0.0")
             db_session.add(model_version_config)
             
-            # --- Point Extraction ---
-            # max_points: Maximum number of points to extract from prediction (default: 500)
-            #             Split equally between foreground and background
-            max_points_config = Config(key="max_points", value="500")
+            # --- Point Extraction (with defaults) ---
+            if point_config is None:
+                point_config = {
+                    "max_points": 500,
+                    "confidence_threshold": 0.15,
+                    "min_distance": 3.0,
+                    "gradient_weight": 2.0
+                }
+            
+            max_points_config = Config(key="max_points", value=str(point_config["max_points"]))
             db_session.add(max_points_config)
             
-            # confidence_threshold: Confidence threshold for point extraction (default: 0.15)
-            #                       Only pixels with prob < 0.15 or > 0.85 are considered
-            confidence_threshold_config = Config(key="confidence_threshold", value="0.15")
+            confidence_threshold_config = Config(key="confidence_threshold", value=str(point_config["confidence_threshold"]))
             db_session.add(confidence_threshold_config)
             
-            # min_distance: Minimum distance between extracted points in pixels (default: 3.0)
-            #               Ensures points are spatially distributed
-            min_distance_config = Config(key="min_distance", value="3.0")
+            min_distance_config = Config(key="min_distance", value=str(point_config["min_distance"]))
             db_session.add(min_distance_config)
             
-            # gradient_weight: Weight for gradient-based importance (default: 2.0)
-            #                  Higher values = more points near edges/boundaries
-            gradient_weight_config = Config(key="gradient_weight", value="2.0")
+            gradient_weight_config = Config(key="gradient_weight", value=str(point_config["gradient_weight"]))
             db_session.add(gradient_weight_config)
             
             await db_session.commit()
         
-        print("Added default classes: foreground, background")
+        class_names = [cls["name"] for cls in classes]
+        print(f"Added classes: {', '.join(class_names)}")
         print(f"Added config: resize={RESIZE_VALUE}, ML training params, point extraction params")
     
     # Load DINOv3 model
@@ -481,53 +514,132 @@ async def scan_and_process_images(image_dir: Path, formats: list[str], labels_di
     print(f"✓ Storage: {STORAGE_DIR.absolute()}")
 
 
+def load_config(config_path: Path) -> dict:
+    """Load configuration from YAML file"""
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        return config
+    except Exception as e:
+        print(f"Error loading config file: {e}")
+        sys.exit(1)
+
+
+def resolve_path(path_str: str, base_dir: Path) -> Path:
+    """Resolve a path string relative to base directory"""
+    if path_str is None:
+        return None
+    path = Path(path_str)
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Initialize annotation session with images and optional labels"
+        description="Initialize annotation session with images and optional labels",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Initialize with config file:
+  uv run python init_session.py --config dip_picking_config.yaml
+  
+  # Override max_files for testing:
+  uv run python init_session.py --config dip_picking_config.yaml --max-files 10
+        """
     )
     parser.add_argument(
-        "--image-dir",
+        "--config",
         type=str,
         required=True,
-        help="Path to directory containing images"
-    )
-    parser.add_argument(
-        "--formats",
-        type=str,
-        required=True,
-        help="Comma-separated list of image formats (e.g., jpg,png,jpeg)"
-    )
-    parser.add_argument(
-        "--labels-dir",
-        type=str,
-        required=False,
-        help="Optional: Path to directory containing label JSON files"
+        help="Path to YAML configuration file"
     )
     parser.add_argument(
         "--max-files",
         type=int,
         required=False,
-        help="Optional: Maximum number of files to process (useful for testing)"
+        help="Maximum number of files to process (overrides config)"
     )
     
     args = parser.parse_args()
     
-    # Parse arguments
-    image_dir = Path(args.image_dir)
+    # Load configuration
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"Error: Config file does not exist: {config_path}")
+        return
+    
+    print(f"Loading configuration from: {config_path.absolute()}")
+    config = load_config(config_path)
+    config_dir = config_path.parent
+    
+    # Set global paths from config or defaults
+    global SESSION_DIR, STORAGE_DIR, FEATURES_DIR, DB_PATH, DINOV3_REPO, WEIGHTS_PATH, RESIZE_VALUE
+    
+    if "session_dir" in config:
+        SESSION_DIR = resolve_path(config["session_dir"], config_dir)
+    
+    if "dinov3_repo" in config:
+        DINOV3_REPO = resolve_path(config["dinov3_repo"], config_dir)
+        # Update sys.path
+        sys.path.insert(0, str(DINOV3_REPO))
+    
+    if "weights_path" in config:
+        WEIGHTS_PATH = resolve_path(config["weights_path"], config_dir)
+    
+    if "resize" in config:
+        RESIZE_VALUE = config["resize"]
+    
+    # Update derived paths
+    STORAGE_DIR = SESSION_DIR / "storage" / "input"
+    FEATURES_DIR = SESSION_DIR / "storage" / "features"
+    DB_PATH = SESSION_DIR / "annotations.db"
+    
+    # Parse image directory (required from config)
+    if "image_dir" not in config or not config["image_dir"]:
+        print("Error: 'image_dir' must be specified in config file")
+        return
+    
+    image_dir = resolve_path(config["image_dir"], config_dir)
     if not image_dir.exists():
         print(f"Error: Image directory does not exist: {image_dir}")
         return
     
-    formats = [fmt.strip() for fmt in args.formats.split(',')]
+    # Parse formats (required from config)
+    if "formats" not in config or not config["formats"]:
+        print("Error: 'formats' must be specified in config file")
+        return
     
-    # Parse optional labels directory
+    formats = [fmt.strip() for fmt in config["formats"].split(',')]
+    
+    # Parse optional labels directory (from config)
     labels_dir = None
-    if args.labels_dir:
-        labels_dir = Path(args.labels_dir)
-        if not labels_dir.exists():
+    if "labels_dir" in config and config["labels_dir"]:
+        labels_dir = resolve_path(config["labels_dir"], config_dir)
+        if labels_dir and not labels_dir.exists():
             print(f"Warning: Labels directory does not exist: {labels_dir}")
             labels_dir = None
     
+    # Parse optional max_files (command-line arg overrides config)
+    max_files = args.max_files
+    if max_files is None and "max_files" in config:
+        max_files = config["max_files"]
+    
+    # Extract classes, ML config, and point extraction config
+    classes = config.get("classes", None)
+    ml_config = {
+        "prediction_interval": config.get("prediction_interval", 20),
+        "early_stop_patience": config.get("early_stop_patience", 5),
+        "early_stop_threshold": config.get("early_stop_threshold", 0.001)
+    }
+    point_config = {
+        "max_points": config.get("max_points", 500),
+        "confidence_threshold": config.get("confidence_threshold", 0.15),
+        "min_distance": config.get("min_distance", 3.0),
+        "gradient_weight": config.get("gradient_weight", 2.0)
+    }
+    
+    # Print configuration summary
     print("=" * 60)
     print("INITIALIZING ANNOTATION SESSION")
     print("=" * 60)
@@ -535,13 +647,24 @@ def main():
     print(f"Image formats: {', '.join(formats)}")
     if labels_dir:
         print(f"Labels directory: {labels_dir.absolute()}")
-    if args.max_files:
-        print(f"Max files limit: {args.max_files}")
+    if max_files:
+        print(f"Max files limit: {max_files}")
     print(f"Session directory: {SESSION_DIR.absolute()}")
+    print(f"DINOv3 repo: {DINOV3_REPO.absolute()}")
+    print(f"Weights: {WEIGHTS_PATH.absolute()}")
+    print(f"Resize: {RESIZE_VALUE}")
     print("=" * 60)
     
     # Run async processing
-    asyncio.run(scan_and_process_images(image_dir, formats, labels_dir, args.max_files))
+    asyncio.run(scan_and_process_images(
+        image_dir, 
+        formats, 
+        labels_dir, 
+        max_files,
+        classes,
+        ml_config,
+        point_config
+    ))
     
     print("\n✓ Session initialized successfully!")
 

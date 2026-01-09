@@ -1,0 +1,177 @@
+# ==============================================================================
+# Dip Picking Segmentation Configuration
+# ==============================================================================
+# Configuration file for initializing an annotation session for dip picking
+# segmentation tasks in seismic/geological image analysis.
+#
+# This configuration sets up the data paths, feature extraction parameters,
+# ML training parameters, and point extraction settings for the active
+# annotation workflow.
+# ==============================================================================
+
+# ==============================================================================
+# DATA PATHS
+# ==============================================================================
+
+# Path to directory containing input images
+# The script will recursively search this directory for images matching the
+# specified formats below.
+# Example: /Users/username/data/seismic_images
+image_dir: "/path/to/your/images"
+
+# Comma-separated list of image file formats to process
+# Common formats: png, jpg, jpeg, tif, tiff
+# The script will search for both lowercase and uppercase extensions
+formats: "png"
+
+# Optional: Path to directory containing pre-existing label JSON files
+# If provided, the script will attempt to import labels that match image names
+# Set to null or empty string if no labels are available
+# Example: /Users/username/data/seismic_labels
+labels_dir: null
+
+# Optional: Maximum number of image files to process
+# Useful for testing or working with a subset of data
+# Set to null to process all images
+max_files: null
+
+
+# ==============================================================================
+# SESSION AND MODEL PATHS
+# ==============================================================================
+
+# These paths are relative to the project root and typically don't need changes
+# unless you have a custom directory structure
+
+# Session directory where annotations, features, and checkpoints are stored
+# Default: ../session (relative to initialization folder)
+session_dir: "../session"
+
+# Path to DINOv3 model repository
+# Default: ../models/dinov3 (relative to initialization folder)
+dinov3_repo: "../models/dinov3"
+
+# Path to DINOv3 pretrained weights
+# Default: ../models/weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+weights_path: "../models/weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+
+
+# ==============================================================================
+# FEATURE EXTRACTION
+# ==============================================================================
+
+# Target size for DINOv3 feature extraction (in pixels)
+# Images are resized so their largest dimension equals this value, then
+# zero-padded to a square. The value must be a multiple of 16 (DINOv3 patch size).
+# 
+# Guidelines:
+#   - Higher values preserve more detail but increase memory and computation
+#   - 1536 is recommended for high-resolution geological images
+#   - 1024 works well for medium-resolution images
+#   - 512 for lower-resolution or faster processing
+resize: 1536
+
+
+# ==============================================================================
+# CLASS DEFINITIONS
+# ==============================================================================
+
+# Binary segmentation classes for dip picking
+# Each class has a name and color (hex format) for visualization
+
+classes:
+  - name: "foreground"
+    color: "#00FF00"  # Green - represents dip reflections/events
+    
+  - name: "background"
+    color: "#FF0000"  # Red - represents non-dip areas
+
+
+# ==============================================================================
+# ML TRAINING PARAMETERS
+# ==============================================================================
+
+# Number of training epochs between generating predictions on the current file
+# During training, the model will generate predictions periodically to provide
+# feedback to the user. Lower values = more frequent predictions but slower training.
+# Typical range: 10-50
+prediction_interval: 20
+
+# Number of epochs to wait for improvement before early stopping
+# Training stops if the test loss doesn't improve for this many epochs
+# Higher values give more time for convergence but may overtrain
+# Typical range: 3-10
+early_stop_patience: 5
+
+# Minimum improvement threshold for early stopping
+# Only improvements greater than this value count as "real" improvements
+# Prevents stopping due to tiny fluctuations in loss
+# Typical range: 0.0001 - 0.01
+early_stop_threshold: 0.001
+
+
+# ==============================================================================
+# POINT EXTRACTION PARAMETERS
+# ==============================================================================
+# These parameters control how predicted segmentation masks are converted to
+# point annotations for active learning. The goal is to extract informative
+# points near uncertain boundaries for the user to annotate.
+
+# Maximum total number of points to extract from each prediction
+# Points are split equally between foreground and background classes
+# Higher values = more suggestions but may overwhelm the user
+# Typical range: 100-1000
+max_points: 500
+
+# Confidence threshold for point extraction (0.0 - 0.5)
+# Only pixels with predicted probability < threshold OR > (1-threshold) are considered
+# Lower values = stricter confidence requirement, points only at very uncertain regions
+# Higher values = more lenient, includes moderately confident predictions
+# Example: 0.15 means prob < 0.15 (confident background) or prob > 0.85 (confident foreground)
+# Typical range: 0.05 - 0.25
+confidence_threshold: 0.15
+
+# Minimum distance between extracted points (in pixels)
+# Ensures spatial diversity in point suggestions
+# Lower values = denser point sampling
+# Higher values = more spread out points
+# Typical range: 2.0 - 10.0
+min_distance: 3.0
+
+# Weight for gradient-based importance in point selection (multiplicative factor)
+# Higher values prioritize points near edges and boundaries (high gradient regions)
+# Lower values give more uniform spatial sampling
+# 0.0 = no gradient influence (uniform sampling)
+# 2.0 = moderate edge emphasis (recommended for dip picking)
+# 5.0+ = strong edge emphasis
+# Typical range: 0.0 - 5.0
+gradient_weight: 2.0
+
+
+# ==============================================================================
+# NOTES FOR DIP PICKING TASKS
+# ==============================================================================
+# 
+# Dip picking involves identifying dipping geological reflections in seismic
+# or geological images. Key considerations:
+#
+# 1. FEATURE EXTRACTION:
+#    - Use resize=1536 for high-resolution seismic images to preserve fine
+#      details of dipping structures
+#    - For very large images (>2000px), consider 2048 if memory allows
+#
+# 2. POINT EXTRACTION:
+#    - Set gradient_weight=2.0 to emphasize points along dip boundaries
+#    - Use confidence_threshold=0.15 to focus on uncertain boundary regions
+#    - Increase max_points (e.g., 800) if dips have complex geometries
+#
+# 3. TRAINING:
+#    - prediction_interval=20 provides good balance between feedback and speed
+#    - early_stop_patience=5 prevents overfitting on small annotation sets
+#
+# 4. DATA ORGANIZATION:
+#    - Organize images by survey/line for easier management
+#    - Use consistent naming: survey_azimuth_dip_index.png
+#    - Keep labels in parallel directory structure for easy import
+#
+# ==============================================================================
