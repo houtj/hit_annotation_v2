@@ -59,12 +59,12 @@ class Label(Base):
         file_id: Foreign key to files table
         created_by: User who created/updated the label (or "auto: extracted" for ML-generated labels)
         updated_at: Timestamp of last update
-        label_data: JSON array of label objects. Each object can be one of three types:
+        label_data: JSON array of label objects. Each object can be one of these types:
         
             Point label format (for segmentation tasks):
             {
                 "type": "point",
-                "classname": str,      # e.g., "tree", "building"
+                "classname": str,      # e.g., "foreground", "background"
                 "color": str,          # Hex color code, e.g., "#FF5733"
                 "x": float,            # X coordinate in original image space (0.0 to image width)
                 "y": float,            # Y coordinate in original image space (0.0 to image height)
@@ -75,16 +75,12 @@ class Label(Base):
             {
                 "type": "class",
                 "classname": str,      # e.g., "animal", "car", "human"
-                "origin": str          # Either "human" (user-created) or "pred" (predicted by model)
+                "origin": str          # Either "human" (user-created) or "pred" (from ML prediction)
             }
             
-            Examples: 
-                Segmentation: [
-                    {"type": "point", "classname": "tree", "color": "#00FF00", "x": 125.5, "y": 200.3, "origin": "human"}
-                ]
-                Classification: [
-                    {"type": "class", "classname": "animal", "origin": "human"}
-                ]
+            Examples:
+                Point: [{"type": "point", "classname": "foreground", "color": "#00FF00", "x": 125.5, "y": 200.3, "origin": "human"}]
+                Class: [{"type": "class", "classname": "animal", "origin": "human"}]
     """
     __tablename__ = "labels"
 
@@ -105,24 +101,30 @@ class Prediction(Base):
     Attributes:
         id: Primary key
         file_id: Foreign key to files table
-        prediction_data: JSON object containing prediction data. Format depends on task type:
+        prediction_data: JSON object containing prediction results. Format depends on task type:
         
             Segmentation prediction format:
             {
                 "type": "mask",
-                "path": str  # Path to the prediction mask file (2D array saved as PNG)
+                "path": str              # Path to prediction mask PNG file (grayscale, 0-255)
             }
             
             Classification prediction format:
             {
                 "type": "class",
-                "class": str,          # Predicted class name (e.g., "animal", "car")
-                "confidence": float    # Confidence score [0.0, 1.0]
+                "class": str,            # Predicted class name, e.g., "animal"
+                "confidence": float,     # Confidence score for predicted class (0.0 to 1.0)
+                "probabilities": {       # Probability distribution over all classes
+                    "animal": float,
+                    "car": float,
+                    ...
+                }
             }
             
             Examples:
-                Segmentation: {"type": "mask", "path": "storage/predictions/file_1.png"}
-                Classification: {"type": "class", "class": "animal", "confidence": 0.95}
+                Segmentation: {"type": "mask", "path": "predictions/file_1.png"}
+                Classification: {"type": "class", "class": "animal", "confidence": 0.95, 
+                                 "probabilities": {"animal": 0.95, "car": 0.03, "human": 0.01, "other": 0.01}}
     """
     __tablename__ = "predictions"
 
@@ -196,17 +198,6 @@ class Config(Base):
     Attributes:
         key: Configuration key (primary key)
         value: Configuration value as string
-        
-    Common configuration keys:
-        task: Task type - either "segmentation" or "classification"
-        resize: Target size for DINOv3 feature extraction (e.g., "1536")
-        prediction_interval: Epochs between predictions (e.g., "20")
-        early_stop_patience: Epochs to wait for improvement (e.g., "5")
-        early_stop_threshold: Minimum improvement threshold (e.g., "0.001")
-        max_points: Maximum points to extract from prediction (segmentation only)
-        confidence_threshold: Confidence threshold for point extraction (segmentation only)
-        min_distance: Minimum distance between extracted points (segmentation only)
-        gradient_weight: Gradient importance weight for point extraction (segmentation only)
     """
     __tablename__ = "config"
 

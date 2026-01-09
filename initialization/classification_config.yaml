@@ -5,16 +5,17 @@
 # classification tasks.
 #
 # This configuration sets up the data paths, feature extraction parameters,
-# ML training parameters, and class definitions for the active annotation
-# workflow.
+# and ML training parameters for the active annotation workflow.
 # ==============================================================================
 
 # ==============================================================================
 # TASK TYPE
 # ==============================================================================
+# The type of annotation task for this session
+# Options:
+#   - "segmentation": Point-based annotation for binary/multi-class segmentation
+#   - "classification": Image-level classification with class labels
 
-# Task type for this session - determines the annotation workflow and model architecture
-# Valid values: "segmentation" or "classification"
 task: "classification"
 
 # ==============================================================================
@@ -29,17 +30,17 @@ image_dir: "/Users/houtj/projects/active_annotation/data/img_samples"
 # Comma-separated list of image file formats to process
 # Common formats: png, jpg, jpeg, tif, tiff
 # The script will search for both lowercase and uppercase extensions
-formats: "png,jpg,jpeg"
+formats: "jpg,jpeg,png"
 
 # Optional: Path to directory containing pre-existing label JSON files
-# If provided, the script will attempt to import labels that match image names
+# For classification, labels should contain {"type": "class", "classname": "..."}
 # Set to null or empty string if no labels are available
 labels_dir: null
 
 # Optional: Maximum number of image files to process
 # Useful for testing or working with a subset of data
 # Set to null to process all images
-max_files: 100
+max_files: null
 
 
 # ==============================================================================
@@ -82,28 +83,29 @@ resize: 1536
 # CLASS DEFINITIONS
 # ==============================================================================
 
-# Multi-class classification classes
+# Classification classes for image categorization
 # Each class has a name and color (hex format) for visualization
+# Users will select one class per image
 
 classes:
   - name: "animal"
-    color: "#FF5733"  # Red-orange
+    color: "#4CAF50"  # Green - represents animals
     
   - name: "car"
-    color: "#33FF57"  # Green
+    color: "#2196F3"  # Blue - represents vehicles/cars
     
   - name: "human"
-    color: "#3357FF"  # Blue
+    color: "#FF9800"  # Orange - represents people
     
   - name: "other"
-    color: "#F0F0F0"  # Light gray
+    color: "#9E9E9E"  # Grey - represents other/unknown categories
 
 
 # ==============================================================================
 # ML TRAINING PARAMETERS
 # ==============================================================================
 
-# Number of training epochs between generating predictions on the current file
+# Number of training epochs between generating predictions on all files
 # During training, the model will generate predictions periodically to provide
 # feedback to the user. Lower values = more frequent predictions but slower training.
 # Typical range: 10-50
@@ -123,29 +125,30 @@ early_stop_threshold: 0.001
 
 
 # ==============================================================================
-# NOTES FOR CLASSIFICATION TASKS
+# NOTES FOR IMAGE CLASSIFICATION TASKS
 # ==============================================================================
 # 
 # Image classification involves assigning a single class label to each image.
 # Key considerations:
 #
 # 1. FEATURE EXTRACTION:
-#    - Use resize=1536 for high-resolution images
-#    - For smaller images or faster processing, consider 1024 or 512
+#    - DINOv3 features are excellent for classification
+#    - The full feature map is pooled (global average pooling) for classification
+#    - resize=1536 works well for most images
 #
-# 2. CLASS DEFINITIONS:
-#    - Define all possible classes in the classes section above
-#    - Use descriptive names and distinct colors for easy visualization
-#    - Add more classes as needed for your specific task
+# 2. TRAINING:
+#    - Uses CrossEntropy loss for multi-class classification
+#    - Class weights are computed automatically to handle imbalanced datasets
+#    - Batching is image-based (not point-based like segmentation)
 #
-# 3. TRAINING:
-#    - prediction_interval=20 provides good balance between feedback and speed
-#    - early_stop_patience=5 prevents overfitting on small annotation sets
-#    - Model uses global average pooling over DINOv3 features
+# 3. LABELING WORKFLOW:
+#    - Users simply click on a class to assign it to the current image
+#    - Predictions show the model's top class with confidence scores
+#    - Model predictions can help speed up labeling
 #
 # 4. DATA ORGANIZATION:
-#    - Organize images in a flat directory or by category
-#    - Use consistent file naming for easier management
-#    - No need for label files initially - annotate through the UI
+#    - Organize images in a flat or nested directory structure
+#    - Common formats: jpg, jpeg, png
+#    - No mask labels needed - just class assignments
 #
 # ==============================================================================

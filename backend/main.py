@@ -7,44 +7,47 @@ from contextlib import asynccontextmanager
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy import select
 
-from db.database import init_db, get_db
+from db.database import init_db, get_db, AsyncSessionLocal
 from db.models import Config, Class
-from routes import files, labels, training, config
+from routes import files, labels, training
 from routes.websocket import router as websocket_router, notification_router
 
 
 class AppState:
-    """Application state for caching configuration"""
+    """Application-level state cached at startup"""
     def __init__(self):
-        self.task_type: str | None = None
-        self.classes: list[dict] | None = None
-        self.config: dict | None = None
+        self.task_type: str = "segmentation"  # Default
+        self.classes: list = []
+        self.config: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database and load configuration on startup"""
+    """Initialize database and load config on startup"""
     await init_db()
     
-    # Load configuration into app state
-    app.state.app = AppState()
-    
-    async for db in get_db():
-        # Load task type and config
+    # Load and cache task type and classes
+    async with AsyncSessionLocal() as db:
+        # Load config
         config_query = select(Config)
         config_result = await db.execute(config_query)
         configs = config_result.scalars().all()
-        app.state.app.config = {cfg.key: cfg.value for cfg in configs}
-        app.state.app.task_type = app.state.app.config.get('task', 'segmentation')
+        app.state.app_config = {cfg.key: cfg.value for cfg in configs}
+        
+        # Set task type
+        app.state.task_type = app.state.app_config.get('task', 'segmentation')
         
         # Load classes
-        classes_query = select(Class)
+        classes_query = select(Class).order_by(Class.classname)
         classes_result = await db.execute(classes_query)
         classes = classes_result.scalars().all()
-        app.state.app.classes = [{"classname": cls.classname, "color": cls.color} for cls in classes]
-        
-        print(f"Loaded configuration: task_type={app.state.app.task_type}, classes={len(app.state.app.classes)}")
-        break
+        app.state.classes = [
+            {"classname": cls.classname, "color": cls.color}
+            for cls in classes
+        ]
+    
+    print(f"[Startup] Task type: {app.state.task_type}")
+    print(f"[Startup] Classes: {[c['classname'] for c in app.state.classes]}")
     
     yield
 
@@ -56,6 +59,12 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Initialize app state
+app.state.task_type = "segmentation"
+app.state.classes = []
+app.state.app_config = {}
+
 
 # No-cache middleware to prevent browser caching
 class NoCacheMiddleware(BaseHTTPMiddleware):
@@ -81,7 +90,6 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(config.router)
 app.include_router(files.router)
 app.include_router(labels.router)
 app.include_router(websocket_router)
@@ -96,3 +104,17 @@ app.include_router(training.router)
 async def health_check():
     """Health check endpoint"""
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+async def get_config(request: Request):
+    """
+    Get application configuration
+    
+    Returns cached config including task type and classes.
+    This endpoint does NOT query the database - it returns cached values.
+    """
+    return {
+        "task": request.app.state.task_type,
+        "classes": request.app.state.classes,
+    }

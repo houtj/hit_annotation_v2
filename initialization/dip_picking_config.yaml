@@ -12,9 +12,11 @@
 # ==============================================================================
 # TASK TYPE
 # ==============================================================================
+# The type of annotation task for this session
+# Options:
+#   - "segmentation": Point-based annotation for binary/multi-class segmentation
+#   - "classification": Image-level classification with class labels
 
-# Task type for this session - determines the annotation workflow and model architecture
-# Valid values: "segmentation" or "classification"
 task: "segmentation"
 
 # ==============================================================================

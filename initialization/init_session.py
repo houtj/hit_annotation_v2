@@ -7,23 +7,29 @@ Creates session folder structure and populates database with images.
 USAGE:
 ======
     uv run python init_session.py --config dip_picking_config.yaml
+    uv run python init_session.py --config classification_config.yaml
 
 Configuration File:
 ===================
 All initialization parameters must be specified in a YAML configuration file.
-See dip_picking_config.yaml for a fully documented example for dip picking tasks.
+See dip_picking_config.yaml for segmentation tasks or classification_config.yaml
+for image classification tasks.
 
 Key configuration sections:
+  - Task Type: task ("segmentation" or "classification")
   - Data Paths: image_dir, formats, labels_dir, max_files
   - Feature Extraction: resize (DINOv3 target size)
   - ML Training: prediction_interval, early_stop_patience, early_stop_threshold
-  - Point Extraction: max_points, confidence_threshold, min_distance, gradient_weight
-  - Classes: name and color for each segmentation class
+  - Point Extraction (segmentation only): max_points, confidence_threshold, min_distance, gradient_weight
+  - Classes: name and color for each class
 
 Configuration Parameters (stored in Config table):
 ===================================================
 All parameters from the config file are stored in the database's Config table
 and can be accessed by the backend and ML service during annotation and training.
+
+Task Type:
+  - task: "segmentation"            # Task type: "segmentation" or "classification"
 
 Feature Extraction:
   - resize: 1536                    # Target size for DINOv3 feature extraction
@@ -36,15 +42,15 @@ ML Training:
   - current_file_id: ""             # Currently annotated file ID
   - model_version: "0.0"            # Current model version (X.X format)
 
-Point Extraction:
+Point Extraction (segmentation only):
   - max_points: 500                 # Maximum points to extract from prediction
   - confidence_threshold: 0.15      # Confidence threshold (pixels <0.15 or >0.85)
   - min_distance: 3.0               # Minimum distance between points (pixels)
   - gradient_weight: 2.0            # Gradient importance weight (higher=more edges)
 
-Classes (example for dip picking):
-  - foreground: #00FF00 (green)     # Dip reflections/events
-  - background: #FF0000 (red)       # Non-dip areas
+Classes (examples):
+  - Segmentation: foreground (#00FF00), background (#FF0000)
+  - Classification: animal, car, human, other (with custom colors)
 """
 
 import argparse
@@ -314,7 +320,7 @@ async def scan_and_process_images(
     classes: list[dict] | None = None,
     ml_config: dict | None = None,
     point_config: dict | None = None,
-    config: dict | None = None
+    task: str = "segmentation"
 ):
     """
     Scan directory for images, convert and add to database
@@ -324,6 +330,10 @@ async def scan_and_process_images(
         formats: List of image file extensions to process
         labels_dir: Optional directory containing label JSON files
         max_files: Optional maximum number of files to process (for testing/limiting)
+        classes: List of class definitions with name and color
+        ml_config: ML training configuration parameters
+        point_config: Point extraction configuration (segmentation only, ignored for classification)
+        task: Task type - "segmentation" or "classification"
     """
     # Check if session exists
     session_exists = SESSION_DIR.exists()
@@ -391,13 +401,7 @@ async def scan_and_process_images(
             # All config values are stored as strings in the database
             
             # --- Task Type ---
-            if config is None:
-                task_type = "segmentation"  # Default to segmentation
-            else:
-                task_type = config.get("task", "segmentation")
-            if task_type not in ["segmentation", "classification"]:
-                raise ValueError(f"Invalid task type: {task_type}. Must be 'segmentation' or 'classification'")
-            task_config = Config(key="task", value=task_type)
+            task_config = Config(key="task", value=task)
             db_session.add(task_config)
             
             # --- Feature Extraction ---
@@ -431,32 +435,37 @@ async def scan_and_process_images(
             model_version_config = Config(key="model_version", value="0.0")
             db_session.add(model_version_config)
             
-            # --- Point Extraction (with defaults) ---
-            if point_config is None:
-                point_config = {
-                    "max_points": 500,
-                    "confidence_threshold": 0.15,
-                    "min_distance": 3.0,
-                    "gradient_weight": 2.0
-                }
-            
-            max_points_config = Config(key="max_points", value=str(point_config["max_points"]))
-            db_session.add(max_points_config)
-            
-            confidence_threshold_config = Config(key="confidence_threshold", value=str(point_config["confidence_threshold"]))
-            db_session.add(confidence_threshold_config)
-            
-            min_distance_config = Config(key="min_distance", value=str(point_config["min_distance"]))
-            db_session.add(min_distance_config)
-            
-            gradient_weight_config = Config(key="gradient_weight", value=str(point_config["gradient_weight"]))
-            db_session.add(gradient_weight_config)
+            # --- Point Extraction (segmentation only) ---
+            if task == "segmentation":
+                if point_config is None:
+                    point_config = {
+                        "max_points": 500,
+                        "confidence_threshold": 0.15,
+                        "min_distance": 3.0,
+                        "gradient_weight": 2.0
+                    }
+                
+                max_points_config = Config(key="max_points", value=str(point_config["max_points"]))
+                db_session.add(max_points_config)
+                
+                confidence_threshold_config = Config(key="confidence_threshold", value=str(point_config["confidence_threshold"]))
+                db_session.add(confidence_threshold_config)
+                
+                min_distance_config = Config(key="min_distance", value=str(point_config["min_distance"]))
+                db_session.add(min_distance_config)
+                
+                gradient_weight_config = Config(key="gradient_weight", value=str(point_config["gradient_weight"]))
+                db_session.add(gradient_weight_config)
             
             await db_session.commit()
         
         class_names = [cls["name"] for cls in classes]
+        print(f"Added task: {task}")
         print(f"Added classes: {', '.join(class_names)}")
-        print(f"Added config: task={task_type}, resize={RESIZE_VALUE}, ML training params, point extraction params")
+        if task == "segmentation":
+            print(f"Added config: resize={RESIZE_VALUE}, ML training params, point extraction params")
+        else:
+            print(f"Added config: resize={RESIZE_VALUE}, ML training params")
     
     # Load DINOv3 model
     print("\nLoading DINOv3 model...")
@@ -636,6 +645,12 @@ Examples:
     if max_files is None and "max_files" in config:
         max_files = config["max_files"]
     
+    # Extract task type (required)
+    task = config.get("task", "segmentation")
+    if task not in ["segmentation", "classification"]:
+        print(f"Error: Invalid task type '{task}'. Must be 'segmentation' or 'classification'")
+        return
+    
     # Extract classes, ML config, and point extraction config
     classes = config.get("classes", None)
     ml_config = {
@@ -643,17 +658,22 @@ Examples:
         "early_stop_patience": config.get("early_stop_patience", 5),
         "early_stop_threshold": config.get("early_stop_threshold", 0.001)
     }
-    point_config = {
-        "max_points": config.get("max_points", 500),
-        "confidence_threshold": config.get("confidence_threshold", 0.15),
-        "min_distance": config.get("min_distance", 3.0),
-        "gradient_weight": config.get("gradient_weight", 2.0)
-    }
+    
+    # Point extraction config (only used for segmentation)
+    point_config = None
+    if task == "segmentation":
+        point_config = {
+            "max_points": config.get("max_points", 500),
+            "confidence_threshold": config.get("confidence_threshold", 0.15),
+            "min_distance": config.get("min_distance", 3.0),
+            "gradient_weight": config.get("gradient_weight", 2.0)
+        }
     
     # Print configuration summary
     print("=" * 60)
     print("INITIALIZING ANNOTATION SESSION")
     print("=" * 60)
+    print(f"Task type: {task}")
     print(f"Image directory: {image_dir.absolute()}")
     print(f"Image formats: {', '.join(formats)}")
     if labels_dir:
@@ -675,7 +695,7 @@ Examples:
         classes,
         ml_config,
         point_config,
-        config
+        task
     ))
     
     print("\n✓ Session initialized successfully!")

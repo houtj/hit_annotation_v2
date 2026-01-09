@@ -17,3 +17,4 @@ data
 models/weights
 # macOS files
 .DS_Store
+session*/*

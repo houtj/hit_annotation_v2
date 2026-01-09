@@ -136,3 +136,67 @@ export async function getCurrentVersion(): Promise<{version: string}> {
   const timestamp = new Date().getTime();
   return fetchAPI<{version: string}>(`/training/version?_t=${timestamp}`);
 }
+
+// ============================================================================
+// Config API
+// ============================================================================
+
+export interface AppConfigResponse {
+  task: 'segmentation' | 'classification';
+  classes: Class[];
+}
+
+export async function getConfig(): Promise<AppConfigResponse> {
+  return fetchAPI<AppConfigResponse>('/config');
+}
+
+// ============================================================================
+// Prediction API
+// ============================================================================
+
+export interface ClassificationPrediction {
+  type: 'class';
+  class: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+}
+
+/**
+ * Get classification prediction for a file
+ * Only works when task type is 'classification'
+ */
+export async function getClassificationPrediction(fileId: number): Promise<ClassificationPrediction | null> {
+  try {
+    const timestamp = new Date().getTime();
+    const response = await fetch(`${API_BASE}/files/${fileId}/prediction?_t=${timestamp}`, {
+      cache: 'no-store',
+    });
+    
+    if (!response.ok) {
+      if (response.status === 404) {
+        return null;  // No prediction available
+      }
+      throw new Error(`API error: ${response.statusText}`);
+    }
+    
+    // Check if response is JSON (classification) or image (segmentation)
+    const contentType = response.headers.get('content-type');
+    if (contentType?.includes('application/json')) {
+      return await response.json();
+    }
+    
+    // For segmentation, return null (use getPredictionUrl instead)
+    return null;
+  } catch (error) {
+    console.error('Error fetching prediction:', error);
+    return null;
+  }
+}
+
+/**
+ * Get URL for segmentation prediction mask
+ */
+export function getPredictionUrl(fileId: number): string {
+  const timestamp = new Date().getTime();
+  return `${API_BASE}/files/${fileId}/prediction?_t=${timestamp}`;
+}

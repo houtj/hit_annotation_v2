@@ -1,6 +1,6 @@
 """Label management API endpoints"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 import io
+import json
 
 from db.database import get_db, SESSION_DIR
 from db.models import File, Label, Class
@@ -155,14 +156,17 @@ async def create_or_update_label(
 
 
 @router.get("/files/{file_id}/prediction")
-async def get_prediction(file_id: int, db: AsyncSession = Depends(get_db)):
+async def get_prediction(file_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Get prediction for a file
     
     For segmentation: Returns the prediction mask as a PNG image
-    For classification: Returns JSON with class and confidence
+    For classification: Returns JSON with class prediction and confidence
     """
     from db.models import Prediction
+    
+    # Get task type from app state
+    task_type = request.app.state.task_type
     
     # Get prediction for this file
     pred_query = select(Prediction).where(Prediction.file_id == file_id)
@@ -172,47 +176,53 @@ async def get_prediction(file_id: int, db: AsyncSession = Depends(get_db)):
     if not prediction:
         raise HTTPException(status_code=404, detail="No prediction available for this file")
     
-    pred_data = prediction.prediction_data
+    # Parse prediction_data JSON
+    try:
+        pred_data = prediction.prediction_data
+        if isinstance(pred_data, str):
+            pred_data = json.loads(pred_data)
+    except (json.JSONDecodeError, AttributeError):
+        raise HTTPException(status_code=500, detail="Invalid prediction data format")
     
-    if pred_data.get("type") == "mask":
-        # Segmentation: return mask image
-        mask_path = SESSION_DIR / pred_data["path"]
+    pred_type = pred_data.get('type')
+    
+    if pred_type == 'mask':
+        # Segmentation: return mask as PNG image
+        mask_path = SESSION_DIR / pred_data.get('path', '')
         if not mask_path.exists():
             raise HTTPException(status_code=404, detail="Prediction file not found on disk")
         
         try:
             mask_img = Image.open(mask_path)
-            
-            # Convert to PNG bytes
             img_byte_arr = io.BytesIO()
             mask_img.save(img_byte_arr, format='PNG')
             img_byte_arr.seek(0)
-            
             return Response(content=img_byte_arr.getvalue(), media_type="image/png")
-        
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error loading prediction mask: {str(e)}")
     
-    elif pred_data.get("type") == "class":
-        # Classification: return JSON
+    elif pred_type == 'class':
+        # Classification: return JSON with class and confidence
         return {
             "type": "class",
-            "class": pred_data.get("class"),
-            "confidence": pred_data.get("confidence")
+            "class": pred_data.get('class'),
+            "confidence": pred_data.get('confidence'),
+            "probabilities": pred_data.get('probabilities', {})
         }
     
     else:
-        raise HTTPException(status_code=500, detail="Unknown prediction type")
+        raise HTTPException(status_code=500, detail=f"Unknown prediction type: {pred_type}")
 
 
 @router.post("/files/{file_id}/extract-points")
 async def extract_points(
     file_id: int,
     created_by: str,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Extract points from prediction mask and save to database
+    Extract points from prediction mask and save to database (segmentation only)
     
     This endpoint:
     1. Removes all previously extracted points (origin="pred")
@@ -231,7 +241,15 @@ async def extract_points(
         - removed_count: Number of old extracted points removed
         - total_count: Total points after merge
     """
-    from db.models import Prediction
+    from db.models import Prediction, Config
+    
+    # Check task type - this endpoint only works for segmentation
+    task_type = request.app.state.task_type
+    if task_type != "segmentation":
+        raise HTTPException(
+            status_code=400,
+            detail="Point extraction is only available for segmentation tasks"
+        )
     
     # Check if file exists
     file_query = select(File).where(File.id == file_id)
@@ -249,8 +267,18 @@ async def extract_points(
     if not prediction:
         raise HTTPException(status_code=404, detail="No prediction available for this file")
     
-    # Get prediction mask path
-    mask_path = SESSION_DIR / prediction.path
+    # Parse prediction_data to get mask path
+    try:
+        pred_data = prediction.prediction_data
+        if isinstance(pred_data, str):
+            pred_data = json.loads(pred_data)
+        if pred_data.get('type') != 'mask':
+            raise HTTPException(status_code=400, detail="Prediction is not a mask type")
+        mask_relative_path = pred_data.get('path')
+    except (json.JSONDecodeError, KeyError):
+        raise HTTPException(status_code=500, detail="Invalid prediction data format")
+    
+    mask_path = SESSION_DIR / mask_relative_path
     if not mask_path.exists():
         raise HTTPException(status_code=404, detail="Prediction file not found on disk")
     
@@ -265,7 +293,6 @@ async def extract_points(
     background_color = color_map.get('background', '#0000ff')
     
     # Get point extraction parameters from config
-    from db.models import Config
     config_query = select(Config).where(Config.key.in_([
         'max_points', 'confidence_threshold', 'min_distance', 'gradient_weight'
     ]))

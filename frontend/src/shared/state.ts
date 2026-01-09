@@ -2,30 +2,72 @@
  * Application state management
  */
 
-// Application state
-class AppState {
-  taskType: string | null = null;
-  
-  async initialize(): Promise<void> {
-    // Fetch task type from backend
-    try {
-      const response = await fetch('/api/config');
-      if (response.ok) {
-        const config = await response.json();
-        this.taskType = config.task;
-        console.log(`Initialized app with task type: ${this.taskType}`);
-      } else {
-        console.error('Failed to load config from backend');
-        this.taskType = 'segmentation'; // Default fallback
-      }
-    } catch (error) {
-      console.error('Error loading config:', error);
-      this.taskType = 'segmentation'; // Default fallback
+// ============================================================================
+// App Configuration (loaded once at startup)
+// ============================================================================
+
+export type TaskType = 'segmentation' | 'classification';
+
+export interface AppConfig {
+  task: TaskType;
+  classes: Array<{ classname: string; color: string }>;
+}
+
+// Cached app config (loaded on app init)
+let appConfig: AppConfig | null = null;
+
+/**
+ * Initialize app by loading config from backend
+ * Should be called once at app startup
+ */
+export async function initializeApp(): Promise<AppConfig> {
+  if (appConfig !== null) {
+    return appConfig;
+  }
+
+  try {
+    const response = await fetch('/api/config');
+    if (!response.ok) {
+      throw new Error('Failed to load config');
     }
+    appConfig = await response.json();
+    console.log('[App] Initialized with task:', appConfig!.task);
+    return appConfig!;
+  } catch (error) {
+    console.error('[App] Failed to initialize:', error);
+    // Default to segmentation if config loading fails
+    appConfig = {
+      task: 'segmentation',
+      classes: []
+    };
+    return appConfig;
   }
 }
 
-export const appState = new AppState();
+/**
+ * Get the current task type (cached)
+ */
+export function getTaskType(): TaskType {
+  return appConfig?.task ?? 'segmentation';
+}
+
+/**
+ * Get cached app config
+ */
+export function getAppConfig(): AppConfig | null {
+  return appConfig;
+}
+
+/**
+ * Check if app has been initialized
+ */
+export function isAppInitialized(): boolean {
+  return appConfig !== null;
+}
+
+// ============================================================================
+// User Session
+// ============================================================================
 
 // Get current username from localStorage
 export function getUsername(): string | null {
@@ -46,4 +88,3 @@ export function clearUsername(): void {
 export function isLoggedIn(): boolean {
   return getUsername() !== null;
 }
-

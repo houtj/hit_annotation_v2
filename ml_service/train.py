@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main training script for ML service"""
+"""Main training script for ML service - Task-agnostic entry point"""
 
 import sqlite3
 import time
@@ -8,16 +8,13 @@ from pathlib import Path
 from datetime import datetime
 import torch
 
-from data_loader import (
-    load_human_labeled_files,
-    split_train_test
-)
+from data_loaders import load_human_labeled_files, split_train_test
 from training_loop import train_with_suspension
 from task_factory import (
     create_model_head,
-    create_loss_fn,
-    load_training_data_for_task,
-    get_checkpoint_prefix
+    get_checkpoint_prefix,
+    get_class_names,
+    get_num_classes
 )
 
 
@@ -138,7 +135,6 @@ def update_model_version_record(
     now = datetime.now().isoformat()
     
     if metrics:
-        import json
         metrics_json = json.dumps(metrics)
         cursor.execute(
             "UPDATE model_versions SET status = ?, training_end_at = ?, metrics = ?, path = ? WHERE version = ?",
@@ -215,6 +211,7 @@ def main():
         
         try:
             # Parse config
+            task_type = config.get('task', 'segmentation')
             prediction_interval = int(config.get('prediction_interval', '20'))
             early_stop_patience = int(config.get('early_stop_patience', '5'))
             early_stop_threshold = float(config.get('early_stop_threshold', '0.001'))
@@ -238,6 +235,7 @@ def main():
             version_str = f"{major}.0"
             
             print(f"\nConfiguration:")
+            print(f"  Task type: {task_type}")
             print(f"  Version: {version_str}")
             print(f"  Current file ID: {current_file_id}")
             print(f"  Prediction interval: {prediction_interval} epochs")
@@ -249,7 +247,7 @@ def main():
             
             # Load human-labeled files
             print(f"\nLoading training data...")
-            labeled_files = load_human_labeled_files(db_path)
+            labeled_files = load_human_labeled_files(db_path, task_type)
             print(f"  Found {len(labeled_files)} human-labeled files")
             
             if len(labeled_files) < 2:
@@ -263,36 +261,11 @@ def main():
             print(f"  Train files: {len(train_ids)}")
             print(f"  Test files: {len(test_ids)}")
             
-            # Load data based on task type
-            print(f"\nLoading features and labels...")
-            task_type = config.get('task', 'segmentation')
-            
-            if task_type == "segmentation":
-                from data_loader import load_training_data
-                train_data = load_training_data(train_ids, session_dir)
-                test_data = load_training_data(test_ids, session_dir)
-                print(f"  Train samples: {len(train_data)}")
-                print(f"  Test samples: {len(test_data)}")
-                
-                if len(train_data) == 0 or len(test_data) == 0:
-                    print("  Error: No valid training or test data")
-                    update_model_version_record(db_path, version_str, "failed")
-                    update_config(db_path, 'training_trigger', '0')
-                    continue
-            elif task_type == "classification":
-                # For classification, we get batched tensors directly
-                train_data, test_data = None, None  # Will be loaded in training loop
-                print(f"  Train files: {len(train_ids)}")
-                print(f"  Test files: {len(test_ids)}")
-            else:
-                print(f"  Error: Unknown task type: {task_type}")
-                update_model_version_record(db_path, version_str, "failed")
-                update_config(db_path, 'training_trigger', '0')
-                continue
-            
-            # Initialize or load model using task factory
+            # Initialize model using task factory
             print(f"\nInitializing model...")
-            head = create_model_head(task_type, config, device)
+            num_classes = len(config.get('classes', []))
+            head = create_model_head(task_type, num_classes=num_classes)
+            head = head.to(device)
             
             # Count parameters
             total_params = sum(p.numel() for p in head.parameters())
@@ -315,12 +288,15 @@ def main():
             
             print(f"  Model initialized on {device}")
             
+            # Get class names for classification
+            class_names = [c['name'] for c in config.get('classes', [])]
+            
             # Training loop with suspension
             print(f"\nStarting training...")
             should_stop, final_minor, best_test_loss = train_with_suspension(
                 head=head,
-                train_data=train_data,
-                test_data=test_data,
+                train_ids=train_ids,
+                test_ids=test_ids,
                 session_dir=session_dir,
                 current_file_id=current_file_id,
                 major_version=major,
@@ -331,15 +307,13 @@ def main():
                 max_epochs=1000,
                 learning_rate=1e-3,
                 task_type=task_type,
-                train_ids=train_ids,
-                test_ids=test_ids,
-                config=config
+                class_names=class_names
             )
             
             # Save final checkpoint
             final_version = f"{major}.{final_minor}"
-            final_checkpoint = checkpoint_dir / "binary_seg_head_latest.pth"
-            versioned_checkpoint = checkpoint_dir / f"binary_seg_head_v{final_version.replace('.', '_')}.pth"
+            final_checkpoint = checkpoint_dir / f"{checkpoint_prefix}_latest.pth"
+            versioned_checkpoint = checkpoint_dir / f"{checkpoint_prefix}_v{final_version.replace('.', '_')}.pth"
             
             torch.save(head.state_dict(), final_checkpoint)
             torch.save(head.state_dict(), versioned_checkpoint)
@@ -386,4 +360,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
