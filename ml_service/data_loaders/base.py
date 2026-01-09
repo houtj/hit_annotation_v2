@@ -116,6 +116,65 @@ def load_labels(file_id: int, db_path: Path) -> List[Dict]:
     return json.loads(row[0])
 
 
+def load_unlabeled_files(
+    db_path: Path,
+    limit: int = 10,
+    exclude_ids: List[int] = None
+) -> List[int]:
+    """
+    Query files that don't have human labels yet
+    
+    Priority order:
+    1. Files without ANY labels (highest priority)
+    2. Files with only auto-generated labels
+    
+    Args:
+        db_path: Path to SQLite database
+        limit: Maximum number of file IDs to return
+        exclude_ids: Optional list of file IDs to exclude
+    
+    Returns:
+        List of file IDs without human labels, ordered by filename
+    """
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Build exclusion clause
+    exclude_clause = ""
+    params = [limit]
+    if exclude_ids:
+        placeholders = ','.join('?' * len(exclude_ids))
+        exclude_clause = f"AND f.id NOT IN ({placeholders})"
+        params = exclude_ids + params
+    
+    # Query files without human labels
+    # Priority 1: Files without any labels
+    # Priority 2: Files with only auto-generated labels
+    query = f"""
+        SELECT f.id
+        FROM files f
+        LEFT JOIN labels l ON f.id = l.file_id
+        WHERE (
+            l.id IS NULL  -- No labels at all
+            OR (
+                l.label_data = '[]'  -- Empty labels
+                OR l.created_by LIKE 'auto%'  -- Only auto labels
+            )
+        )
+        {exclude_clause}
+        GROUP BY f.id
+        HAVING COUNT(CASE WHEN l.created_by NOT LIKE 'auto%' AND l.label_data != '[]' THEN 1 END) = 0
+        ORDER BY f.filename
+        LIMIT ?
+    """
+    
+    cursor.execute(query, params)
+    file_ids = [row[0] for row in cursor.fetchall()]
+    
+    conn.close()
+    return file_ids
+
+
 def load_classes(db_path: Path) -> List[Dict]:
     """
     Load class definitions from database

@@ -306,6 +306,103 @@ def validate_classification(
 
 
 # ==============================================================================
+# Inference Strategy Functions
+# ==============================================================================
+
+def run_segmentation_inference(
+    head: nn.Module,
+    current_file_id: int,
+    session_dir: Path,
+    version_str: str,
+    device: torch.device,
+    **kwargs
+) -> None:
+    """
+    Run inference on current file for segmentation task
+    
+    Args:
+        head: Trained segmentation head
+        current_file_id: File ID to predict
+        session_dir: Path to session directory
+        version_str: Model version string
+        device: torch device
+    """
+    from inference import predict_full_image
+    
+    try:
+        mask_path = predict_full_image(
+            head, current_file_id, session_dir, version_str, device
+        )
+        print(f"  Generated segmentation prediction: {mask_path.name}")
+    except Exception as e:
+        print(f"  Error during segmentation inference: {e}")
+
+
+def run_classification_inference(
+    head: nn.Module,
+    session_dir: Path,
+    version_str: str,
+    device: torch.device,
+    class_names: List[str],
+    batch_size: int = 10,
+    exclude_train_test: List[int] = None,
+    **kwargs
+) -> int:
+    """
+    Run batch inference on next unlabeled files for classification task
+    
+    Args:
+        head: Trained classification head
+        session_dir: Path to session directory
+        version_str: Model version string
+        device: torch device
+        class_names: List of class names
+        batch_size: Number of files to predict
+        exclude_train_test: List of file IDs to exclude (train/test set)
+    
+    Returns:
+        Number of files successfully predicted
+    """
+    from inference import predict_classification
+    from data_loaders.base import load_unlabeled_files
+    
+    db_path = session_dir / "annotations.db"
+    
+    try:
+        # Query next unlabeled files
+        unlabeled_ids = load_unlabeled_files(
+            db_path,
+            limit=batch_size,
+            exclude_ids=exclude_train_test
+        )
+        
+        if not unlabeled_ids:
+            print(f"  No unlabeled files found for batch inference")
+            return 0
+        
+        print(f"  Running batch inference on {len(unlabeled_ids)} unlabeled files...")
+        
+        # Predict each file
+        success_count = 0
+        for file_id in unlabeled_ids:
+            try:
+                result = predict_classification(
+                    head, file_id, session_dir, version_str, device, class_names
+                )
+                print(f"    File {file_id}: {result['class']} (confidence: {result['confidence']:.3f})")
+                success_count += 1
+            except Exception as e:
+                print(f"    Error predicting file {file_id}: {e}")
+        
+        print(f"  Successfully predicted {success_count}/{len(unlabeled_ids)} files")
+        return success_count
+        
+    except Exception as e:
+        print(f"  Error during batch classification inference: {e}")
+        return 0
+
+
+# ==============================================================================
 # Main training loop (task-agnostic with suspension)
 # ==============================================================================
 
@@ -329,15 +426,19 @@ def train_with_suspension(
     """
     Train with periodic suspension for inference - supports both segmentation and classification
     
+    Task-specific inference behavior:
+    - Segmentation: Periodic inference on current_file_id during training + at completion
+    - Classification: Batch inference on next 10 unlabeled files at completion only
+    
     Args:
         head: Model head (BinarySegmentationHead or MultiClassHead)
         train_ids: List of file IDs for training
         test_ids: List of file IDs for testing
         session_dir: Path to session directory
-        current_file_id: File ID for prediction during suspension
+        current_file_id: File ID for prediction during suspension (segmentation only)
         major_version: Major version number
         device: torch device
-        prediction_interval: Suspend every N epochs for inference
+        prediction_interval: Suspend every N epochs for inference (segmentation only)
         early_stop_patience: Stop if test loss doesn't improve for N checks
         early_stop_threshold: Minimum improvement threshold
         max_epochs: Maximum number of epochs
@@ -349,7 +450,6 @@ def train_with_suspension(
     Returns:
         Tuple of (should_stop, final_minor_version, best_test_loss)
     """
-    from inference import predict_full_image, predict_classification
     from task_factory import get_checkpoint_prefix
     
     optimizer = torch.optim.Adam(head.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -436,65 +536,65 @@ def train_with_suspension(
         if check_stop_signal(db_path):
             print(f"\n[Epoch {epoch}] Stop signal received. Terminating training.")
             
-            # Generate final prediction before stopping
+            # Generate final prediction before stopping (task-specific)
             print(f"\nGenerating final prediction before stop...")
-            try:
-                minor_version += 1
-                version_str = f"{major_version}.{minor_version}"
-                
-                if task_type == "segmentation":
-                    mask_path = predict_full_image(
-                        head, current_file_id, session_dir, version_str, device
-                    )
-                    print(f"  Generated final prediction: {mask_path.name}")
-                else:
-                    predict_classification(
-                        head, current_file_id, session_dir, version_str, device, class_names
-                    )
-                    print(f"  Generated classification prediction")
-                
-                notify_prediction_ready(current_file_id, version_str)
-            except Exception as e:
-                print(f"  Error generating final prediction: {e}")
-            
-            return True, minor_version, best_test_loss
-        
-        # Suspension for inference
-        if epoch % prediction_interval == 0 and epoch > 0:
-            print(f"\n[Epoch {epoch}] Suspending for inference...")
-            
             minor_version += 1
             version_str = f"{major_version}.{minor_version}"
             
-            # Save checkpoint
-            checkpoint_dir = session_dir / "checkpoints"
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = checkpoint_dir / f"{checkpoint_prefix}_v{version_str.replace('.', '_')}.pth"
-            torch.save(head.state_dict(), checkpoint_path)
-            print(f"  Saved checkpoint: {checkpoint_path.name}")
-            
-            # Run inference on current file
-            try:
-                if task_type == "segmentation":
-                    mask_path = predict_full_image(
-                        head, current_file_id, session_dir, version_str, device
-                    )
-                    print(f"  Generated prediction: {mask_path.name}")
-                else:
-                    predict_classification(
-                        head, current_file_id, session_dir, version_str, device, class_names
-                    )
-                    print(f"  Generated classification prediction")
-                
+            if task_type == "segmentation":
+                run_segmentation_inference(
+                    head=head,
+                    current_file_id=current_file_id,
+                    session_dir=session_dir,
+                    version_str=version_str,
+                    device=device
+                )
                 notify_prediction_ready(current_file_id, version_str)
-            except Exception as e:
-                print(f"  Error during inference: {e}")
+            else:  # classification
+                run_classification_inference(
+                    head=head,
+                    session_dir=session_dir,
+                    version_str=version_str,
+                    device=device,
+                    class_names=class_names,
+                    batch_size=10,
+                    exclude_train_test=train_ids + test_ids
+                )
             
-            if check_stop_signal(db_path):
-                print(f"  Stop signal received after inference. Terminating training.")
-                return True, minor_version, best_test_loss
-            
-            print(f"  Resuming training...\n")
+            return True, minor_version, best_test_loss
+        
+        # Suspension for inference (task-specific behavior)
+        if epoch % prediction_interval == 0 and epoch > 0:
+            # For segmentation: periodic inference on current file
+            # For classification: skip periodic inference (only at completion)
+            if task_type == "segmentation":
+                print(f"\n[Epoch {epoch}] Suspending for inference...")
+                
+                minor_version += 1
+                version_str = f"{major_version}.{minor_version}"
+                
+                # Save checkpoint
+                checkpoint_dir = session_dir / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint_path = checkpoint_dir / f"{checkpoint_prefix}_v{version_str.replace('.', '_')}.pth"
+                torch.save(head.state_dict(), checkpoint_path)
+                print(f"  Saved checkpoint: {checkpoint_path.name}")
+                
+                # Run segmentation inference on current file
+                run_segmentation_inference(
+                    head=head,
+                    current_file_id=current_file_id,
+                    session_dir=session_dir,
+                    version_str=version_str,
+                    device=device
+                )
+                notify_prediction_ready(current_file_id, version_str)
+                
+                if check_stop_signal(db_path):
+                    print(f"  Stop signal received after inference. Terminating training.")
+                    return True, minor_version, best_test_loss
+                
+                print(f"  Resuming training...\n")
         
         # Train one epoch
         if task_type == "segmentation":
@@ -523,51 +623,59 @@ def train_with_suspension(
             print(f"\n[Epoch {epoch}] Early stopping triggered.")
             print(f"Best test loss: {best_test_loss:.4f}")
             
-            # Generate final prediction
+            # Generate final prediction (task-specific)
             print(f"\nGenerating final prediction...")
-            try:
-                minor_version += 1
-                version_str = f"{major_version}.{minor_version}"
-                
-                if task_type == "segmentation":
-                    mask_path = predict_full_image(
-                        head, current_file_id, session_dir, version_str, device
-                    )
-                    print(f"  Generated final prediction: {mask_path.name}")
-                else:
-                    predict_classification(
-                        head, current_file_id, session_dir, version_str, device, class_names
-                    )
-                    print(f"  Generated classification prediction")
-                
+            minor_version += 1
+            version_str = f"{major_version}.{minor_version}"
+            
+            if task_type == "segmentation":
+                run_segmentation_inference(
+                    head=head,
+                    current_file_id=current_file_id,
+                    session_dir=session_dir,
+                    version_str=version_str,
+                    device=device
+                )
                 notify_prediction_ready(current_file_id, version_str)
-            except Exception as e:
-                print(f"  Error generating final prediction: {e}")
+            else:  # classification
+                run_classification_inference(
+                    head=head,
+                    session_dir=session_dir,
+                    version_str=version_str,
+                    device=device,
+                    class_names=class_names,
+                    batch_size=10,
+                    exclude_train_test=train_ids + test_ids
+                )
             
             return True, minor_version, best_test_loss
     
     print(f"\n[Epoch {max_epochs}] Reached maximum epochs.")
     print(f"Best test loss: {best_test_loss:.4f}")
     
-    # Generate final prediction
+    # Generate final prediction (task-specific)
     print(f"\nGenerating final prediction...")
-    try:
-        minor_version += 1
-        version_str = f"{major_version}.{minor_version}"
-        
-        if task_type == "segmentation":
-            mask_path = predict_full_image(
-                head, current_file_id, session_dir, version_str, device
-            )
-            print(f"  Generated final prediction: {mask_path.name}")
-        else:
-            predict_classification(
-                head, current_file_id, session_dir, version_str, device, class_names
-            )
-            print(f"  Generated classification prediction")
-        
+    minor_version += 1
+    version_str = f"{major_version}.{minor_version}"
+    
+    if task_type == "segmentation":
+        run_segmentation_inference(
+            head=head,
+            current_file_id=current_file_id,
+            session_dir=session_dir,
+            version_str=version_str,
+            device=device
+        )
         notify_prediction_ready(current_file_id, version_str)
-    except Exception as e:
-        print(f"  Error generating final prediction: {e}")
+    else:  # classification
+        run_classification_inference(
+            head=head,
+            session_dir=session_dir,
+            version_str=version_str,
+            device=device,
+            class_names=class_names,
+            batch_size=10,
+            exclude_train_test=train_ids + test_ids
+        )
     
     return False, minor_version, best_test_loss
