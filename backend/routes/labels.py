@@ -157,9 +157,10 @@ async def create_or_update_label(
 @router.get("/files/{file_id}/prediction")
 async def get_prediction(file_id: int, db: AsyncSession = Depends(get_db)):
     """
-    Get prediction mask for a file
+    Get prediction for a file
     
-    Returns the latest prediction mask as a PNG image
+    For segmentation: Returns the prediction mask as a PNG image
+    For classification: Returns JSON with class and confidence
     """
     from db.models import Prediction
     
@@ -171,24 +172,37 @@ async def get_prediction(file_id: int, db: AsyncSession = Depends(get_db)):
     if not prediction:
         raise HTTPException(status_code=404, detail="No prediction available for this file")
     
-    # Load prediction mask and return as PNG
-    mask_path = SESSION_DIR / prediction.path
-    if not mask_path.exists():
-        raise HTTPException(status_code=404, detail="Prediction file not found on disk")
+    pred_data = prediction.prediction_data
     
-    # Load mask image
-    try:
-        mask_img = Image.open(mask_path)
+    if pred_data.get("type") == "mask":
+        # Segmentation: return mask image
+        mask_path = SESSION_DIR / pred_data["path"]
+        if not mask_path.exists():
+            raise HTTPException(status_code=404, detail="Prediction file not found on disk")
         
-        # Convert to PNG bytes
-        img_byte_arr = io.BytesIO()
-        mask_img.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
+        try:
+            mask_img = Image.open(mask_path)
+            
+            # Convert to PNG bytes
+            img_byte_arr = io.BytesIO()
+            mask_img.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
+            
+            return Response(content=img_byte_arr.getvalue(), media_type="image/png")
         
-        return Response(content=img_byte_arr.getvalue(), media_type="image/png")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error loading prediction mask: {str(e)}")
     
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error loading prediction mask: {str(e)}")
+    elif pred_data.get("type") == "class":
+        # Classification: return JSON
+        return {
+            "type": "class",
+            "class": pred_data.get("class"),
+            "confidence": pred_data.get("confidence")
+        }
+    
+    else:
+        raise HTTPException(status_code=500, detail="Unknown prediction type")
 
 
 @router.post("/files/{file_id}/extract-points")

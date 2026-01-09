@@ -313,7 +313,8 @@ async def scan_and_process_images(
     max_files: int | None = None,
     classes: list[dict] | None = None,
     ml_config: dict | None = None,
-    point_config: dict | None = None
+    point_config: dict | None = None,
+    config: dict | None = None
 ):
     """
     Scan directory for images, convert and add to database
@@ -389,6 +390,16 @@ async def scan_and_process_images(
             # ============================================================
             # All config values are stored as strings in the database
             
+            # --- Task Type ---
+            if config is None:
+                task_type = "segmentation"  # Default to segmentation
+            else:
+                task_type = config.get("task", "segmentation")
+            if task_type not in ["segmentation", "classification"]:
+                raise ValueError(f"Invalid task type: {task_type}. Must be 'segmentation' or 'classification'")
+            task_config = Config(key="task", value=task_type)
+            db_session.add(task_config)
+            
             # --- Feature Extraction ---
             resize_config = Config(key="resize", value=str(RESIZE_VALUE))
             db_session.add(resize_config)
@@ -445,7 +456,7 @@ async def scan_and_process_images(
         
         class_names = [cls["name"] for cls in classes]
         print(f"Added classes: {', '.join(class_names)}")
-        print(f"Added config: resize={RESIZE_VALUE}, ML training params, point extraction params")
+        print(f"Added config: task={task_type}, resize={RESIZE_VALUE}, ML training params, point extraction params")
     
     # Load DINOv3 model
     print("\nLoading DINOv3 model...")
@@ -663,7 +674,8 @@ Examples:
         max_files,
         classes,
         ml_config,
-        point_config
+        point_config,
+        config
     ))
     
     print("\n✓ Session initialized successfully!")

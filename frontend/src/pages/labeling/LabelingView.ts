@@ -1,9 +1,9 @@
 /**
- * Labeling page view - annotate images with points
+ * Labeling page view - annotate images with points or classify images
  */
 
 import { getFile, getClasses, getImageUrl, saveLabels, getCurrentVersion, getTrainingMetrics, type FileDetail, type Class, type LabelDataItem } from '../../shared/api';
-import { getUsername } from '../../shared/state';
+import { getUsername, appState } from '../../shared/state';
 
 let currentFile: FileDetail | null = null;
 let classes: Class[] = [];
@@ -23,6 +23,9 @@ let showPrediction: boolean = true;
 let metricsChart: any = null;
 let metricsData: Array<{epoch: number, train_loss: number, test_loss: number}> = [];
 let currentMajorVersion: number = 0;
+let currentClassLabel: string | null = null;  // For classification task
+let predictionClass: string | null = null;  // For classification prediction
+let predictionConfidence: number | null = null;  // For classification confidence
 
 export async function renderLabelingView(fileId: number, onBack: () => void): Promise<void> {
   const mainContent = document.getElementById('main-content');
@@ -48,14 +51,63 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
       selectedClass = classes[0];
     }
 
-    // Load existing labels
-    if (currentFile.label) {
-      points = currentFile.label.label_data.filter(item => item.type === 'point');
-    } else {
-      points = [];
+    // Load existing labels based on task type
+    const taskType = appState.taskType || 'segmentation';
+    
+    if (taskType === 'segmentation') {
+      if (currentFile.label) {
+        points = currentFile.label.label_data.filter(item => item.type === 'point');
+      } else {
+        points = [];
+      }
+    } else if (taskType === 'classification') {
+      // Load class label
+      if (currentFile.label && currentFile.label.label_data.length > 0) {
+        const classLabel = currentFile.label.label_data.find(item => item.type === 'class');
+        currentClassLabel = classLabel?.classname || null;
+      } else {
+        currentClassLabel = null;
+      }
     }
 
-    // Render page
+    // Render page with task-specific UI
+    const toolbarHTML = taskType === 'segmentation' ? `
+      <button id="point-mode-btn" class="tool-btn">📍 Point Mode</button>
+      <button id="extract-points-btn" class="tool-btn">🎯 Extract Points</button>
+      <button id="save-btn" class="btn-primary">💾 Save</button>
+      <button id="stop-btn" class="btn-secondary">⏹ Stop Training</button>
+      <span id="point-count" class="point-count">Points: 0</span>
+    ` : `
+      <div class="classification-info">
+        <span>Current: <strong id="current-class">${currentClassLabel || 'None'}</strong></span>
+        <span id="prediction-info" style="margin-left: 20px;"></span>
+      </div>
+      <button id="save-btn" class="btn-primary">💾 Save</button>
+      <button id="stop-btn" class="btn-secondary">⏹ Stop Training</button>
+    `;
+    
+    const displayOptionsHTML = taskType === 'segmentation' ? `
+      <div class="visibility-section">
+        <h3>Display Options</h3>
+        <div class="toggle-controls">
+          <button id="toggle-points-btn" class="toggle-btn active">
+            <span class="toggle-icon">👁️</span> Show Points
+          </button>
+          <button id="toggle-prediction-btn" class="toggle-btn active">
+            <span class="toggle-icon">👁️</span> Show Prediction
+          </button>
+        </div>
+      </div>
+      
+      <div class="prediction-section">
+        <h3>Prediction Overlay</h3>
+        <div class="opacity-control">
+          <label for="opacity-slider">Opacity: <span id="opacity-value">50%</span></label>
+          <input type="range" id="opacity-slider" min="0" max="100" value="50" />
+        </div>
+      </div>
+    ` : '';
+    
     mainContent.innerHTML = `
       <div class="labeling-container">
         <div class="labeling-header">
@@ -67,11 +119,7 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
         <div class="labeling-body">
           <div class="left-panel">
             <div class="toolbar">
-              <button id="point-mode-btn" class="tool-btn">📍 Point Mode</button>
-              <button id="extract-points-btn" class="tool-btn">🎯 Extract Points</button>
-              <button id="save-btn" class="btn-primary">💾 Save</button>
-              <button id="stop-btn" class="btn-secondary">⏹ Stop Training</button>
-              <span id="point-count" class="point-count">Points: 0</span>
+              ${toolbarHTML}
             </div>
             <div class="canvas-container">
               <canvas id="annotation-canvas"></canvas>
@@ -84,25 +132,7 @@ export async function renderLabelingView(fileId: number, onBack: () => void): Pr
               <div id="classes-list" class="classes-list"></div>
             </div>
             
-            <div class="visibility-section">
-              <h3>Display Options</h3>
-              <div class="toggle-controls">
-                <button id="toggle-points-btn" class="toggle-btn active">
-                  <span class="toggle-icon">👁️</span> Show Points
-                </button>
-                <button id="toggle-prediction-btn" class="toggle-btn active">
-                  <span class="toggle-icon">👁️</span> Show Prediction
-                </button>
-              </div>
-            </div>
-            
-            <div class="prediction-section">
-              <h3>Prediction Overlay</h3>
-              <div class="opacity-control">
-                <label for="opacity-slider">Opacity: <span id="opacity-value">50%</span></label>
-                <input type="range" id="opacity-slider" min="0" max="100" value="50" />
-              </div>
-            </div>
+            ${displayOptionsHTML}
             
             <div class="progress-section">
               <h3>Training Progress</h3>
@@ -332,6 +362,16 @@ function attachLabelingListeners(onBack: () => void) {
       if (classItem) {
         const classname = classItem.dataset.classname;
         selectedClass = classes.find(c => c.classname === classname) || null;
+        
+        // For classification, set the current class label
+        if (taskType === 'classification' && classname) {
+          currentClassLabel = classname;
+          const currentClassEl = document.getElementById('current-class');
+          if (currentClassEl) {
+            currentClassEl.textContent = classname;
+          }
+        }
+        
         renderClasses();
       }
     });
@@ -465,6 +505,8 @@ async function handleSave() {
   const username = getUsername();
   if (!username) return;
   
+  const taskType = appState.taskType || 'segmentation';
+  
   try {
     const saveBtn = document.getElementById('save-btn') as HTMLButtonElement;
     if (saveBtn) {
@@ -472,8 +514,28 @@ async function handleSave() {
       saveBtn.textContent = '💾 Saving...';
     }
     
-    // Save labels
-    await saveLabels(currentFile.id, points, username);
+    // Save labels based on task type
+    if (taskType === 'segmentation') {
+      await saveLabels(currentFile.id, points, username);
+    } else if (taskType === 'classification') {
+      // Save class label
+      if (!currentClassLabel) {
+        alert('Please select a class first');
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = '💾 Save';
+        }
+        return;
+      }
+      
+      const classLabelData = [{
+        type: 'class',
+        classname: currentClassLabel,
+        origin: 'human'
+      }];
+      
+      await saveLabels(currentFile.id, classLabelData, username);
+    }
     
     // Trigger training
     try {

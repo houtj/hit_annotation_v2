@@ -1,12 +1,12 @@
 # ==============================================================================
-# Dip Picking Segmentation Configuration
+# Image Classification Configuration
 # ==============================================================================
-# Configuration file for initializing an annotation session for dip picking
-# segmentation tasks in seismic/geological image analysis.
+# Configuration file for initializing an annotation session for image
+# classification tasks.
 #
 # This configuration sets up the data paths, feature extraction parameters,
-# ML training parameters, and point extraction settings for the active
-# annotation workflow.
+# ML training parameters, and class definitions for the active annotation
+# workflow.
 # ==============================================================================
 
 # ==============================================================================
@@ -15,7 +15,7 @@
 
 # Task type for this session - determines the annotation workflow and model architecture
 # Valid values: "segmentation" or "classification"
-task: "segmentation"
+task: "classification"
 
 # ==============================================================================
 # DATA PATHS
@@ -24,24 +24,22 @@ task: "segmentation"
 # Path to directory containing input images
 # The script will recursively search this directory for images matching the
 # specified formats below.
-# Example: /Users/username/data/seismic_images
-image_dir: "/path/to/your/images"
+image_dir: "/Users/houtj/projects/active_annotation/data/img_samples"
 
 # Comma-separated list of image file formats to process
 # Common formats: png, jpg, jpeg, tif, tiff
 # The script will search for both lowercase and uppercase extensions
-formats: "png"
+formats: "png,jpg,jpeg"
 
 # Optional: Path to directory containing pre-existing label JSON files
 # If provided, the script will attempt to import labels that match image names
 # Set to null or empty string if no labels are available
-# Example: /Users/username/data/seismic_labels
 labels_dir: null
 
 # Optional: Maximum number of image files to process
 # Useful for testing or working with a subset of data
 # Set to null to process all images
-max_files: null
+max_files: 100
 
 
 # ==============================================================================
@@ -74,7 +72,7 @@ weights_path: "../models/weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
 # 
 # Guidelines:
 #   - Higher values preserve more detail but increase memory and computation
-#   - 1536 is recommended for high-resolution geological images
+#   - 1536 is recommended for high-resolution images
 #   - 1024 works well for medium-resolution images
 #   - 512 for lower-resolution or faster processing
 resize: 1536
@@ -84,15 +82,21 @@ resize: 1536
 # CLASS DEFINITIONS
 # ==============================================================================
 
-# Binary segmentation classes for dip picking
+# Multi-class classification classes
 # Each class has a name and color (hex format) for visualization
 
 classes:
-  - name: "foreground"
-    color: "#00FF00"  # Green - represents dip reflections/events
+  - name: "animal"
+    color: "#FF5733"  # Red-orange
     
-  - name: "background"
-    color: "#FF0000"  # Red - represents non-dip areas
+  - name: "car"
+    color: "#33FF57"  # Green
+    
+  - name: "human"
+    color: "#3357FF"  # Blue
+    
+  - name: "other"
+    color: "#F0F0F0"  # Light gray
 
 
 # ==============================================================================
@@ -119,67 +123,29 @@ early_stop_threshold: 0.001
 
 
 # ==============================================================================
-# POINT EXTRACTION PARAMETERS
-# ==============================================================================
-# These parameters control how PREDICTED segmentation masks are converted to
-# point annotations for active learning. The goal is to extract informative
-# points near uncertain boundaries for the user to annotate.
-
-# Maximum total number of points to extract from each prediction
-# Points are split equally between foreground and background classes
-# Higher values = more suggestions but may overwhelm the user
-# Typical range: 100-1000
-max_points: 500
-
-# Confidence threshold for point extraction (0.0 - 0.5)
-# Only pixels with predicted probability < threshold OR > (1-threshold) are considered
-# Lower values = stricter confidence requirement, points only at very uncertain regions
-# Higher values = more lenient, includes moderately confident predictions
-# Example: 0.15 means prob < 0.15 (confident background) or prob > 0.85 (confident foreground)
-# Typical range: 0.05 - 0.25
-confidence_threshold: 0.15
-
-# Minimum distance between extracted points (in pixels)
-# Ensures spatial diversity in point suggestions
-# Lower values = denser point sampling
-# Higher values = more spread out points
-# Typical range: 2.0 - 10.0
-min_distance: 3.0
-
-# Weight for gradient-based importance in point selection (multiplicative factor)
-# Higher values prioritize points near edges and boundaries (high gradient regions)
-# Lower values give more uniform spatial sampling
-# 0.0 = no gradient influence (uniform sampling)
-# 2.0 = moderate edge emphasis (recommended for dip picking)
-# 5.0+ = strong edge emphasis
-# Typical range: 0.0 - 5.0
-gradient_weight: 2.0
-
-
-# ==============================================================================
-# NOTES FOR DIP PICKING TASKS
+# NOTES FOR CLASSIFICATION TASKS
 # ==============================================================================
 # 
-# Dip picking involves identifying dipping geological reflections in seismic
-# or geological images. Key considerations:
+# Image classification involves assigning a single class label to each image.
+# Key considerations:
 #
 # 1. FEATURE EXTRACTION:
-#    - Use resize=1536 for high-resolution seismic images to preserve fine
-#      details of dipping structures
-#    - For very large images (>2000px), consider 2048 if memory allows
+#    - Use resize=1536 for high-resolution images
+#    - For smaller images or faster processing, consider 1024 or 512
 #
-# 2. POINT EXTRACTION:
-#    - Set gradient_weight=2.0 to emphasize points along dip boundaries
-#    - Use confidence_threshold=0.15 to focus on uncertain boundary regions
-#    - Increase max_points (e.g., 800) if dips have complex geometries
+# 2. CLASS DEFINITIONS:
+#    - Define all possible classes in the classes section above
+#    - Use descriptive names and distinct colors for easy visualization
+#    - Add more classes as needed for your specific task
 #
 # 3. TRAINING:
 #    - prediction_interval=20 provides good balance between feedback and speed
 #    - early_stop_patience=5 prevents overfitting on small annotation sets
+#    - Model uses global average pooling over DINOv3 features
 #
 # 4. DATA ORGANIZATION:
-#    - Organize images by survey/line for easier management
-#    - Use consistent naming: survey_azimuth_dip_index.png
-#    - Keep labels in parallel directory structure for easy import
+#    - Organize images in a flat directory or by category
+#    - Use consistent file naming for easier management
+#    - No need for label files initially - annotate through the UI
 #
 # ==============================================================================

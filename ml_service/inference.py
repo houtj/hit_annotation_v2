@@ -180,3 +180,91 @@ def predict_batch(
     
     return mask_paths
 
+
+def predict_classification(
+    head: torch.nn.Module,
+    file_id: int,
+    session_dir: Path,
+    class_names: list[str],
+    device: torch.device
+) -> tuple[str, float]:
+    """
+    Generate classification prediction for an image
+    
+    Args:
+        head: Trained classification head
+        file_id: File ID in database
+        session_dir: Path to session directory
+        class_names: List of class names in order
+        device: torch device
+    
+    Returns:
+        Tuple of (predicted_class_name, confidence_score)
+    """
+    # Load features
+    features, _, _ = load_features(file_id, session_dir)
+    
+    # Move to device and add batch dimension
+    features = features.unsqueeze(0).to(device)  # (1, 384, H, W)
+    
+    # Generate prediction
+    head.eval()
+    with torch.no_grad():
+        logits = head(features)  # (1, num_classes)
+        probs = torch.softmax(logits, dim=1)  # (1, num_classes)
+        confidence, predicted_idx = torch.max(probs, dim=1)
+    
+    predicted_class = class_names[predicted_idx.item()]
+    confidence_score = confidence.item()
+    
+    return predicted_class, confidence_score
+
+
+def save_classification_prediction(
+    db_path: Path,
+    file_id: int,
+    predicted_class: str,
+    confidence: float
+):
+    """
+    Save classification prediction to database
+    
+    Args:
+        db_path: Path to SQLite database
+        file_id: File ID
+        predicted_class: Predicted class name
+        confidence: Confidence score [0, 1]
+    """
+    import json
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Check if prediction exists
+    cursor.execute(
+        "SELECT id FROM predictions WHERE file_id = ?",
+        (file_id,)
+    )
+    existing = cursor.fetchone()
+    
+    prediction_data = {
+        "type": "class",
+        "class": predicted_class,
+        "confidence": confidence
+    }
+    
+    if existing:
+        # Update existing
+        cursor.execute(
+            "UPDATE predictions SET prediction_data = ? WHERE file_id = ?",
+            (json.dumps(prediction_data), file_id)
+        )
+    else:
+        # Insert new
+        cursor.execute(
+            "INSERT INTO predictions (file_id, prediction_data) VALUES (?, ?)",
+            (file_id, json.dumps(prediction_data))
+        )
+    
+    conn.commit()
+    conn.close()
+

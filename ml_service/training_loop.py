@@ -322,10 +322,67 @@ def validate(
     return total_loss / total_points if total_points > 0 else 0.0
 
 
+def train_classification_epoch(
+    head: nn.Module,
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: nn.Module,
+    batch_size: int = 16
+) -> float:
+    """Train one epoch for classification task"""
+    head.train()
+    total_loss = 0.0
+    num_samples = features.size(0)
+    
+    # Shuffle indices
+    indices = torch.randperm(num_samples)
+    
+    for i in range(0, num_samples, batch_size):
+        batch_indices = indices[i:i+batch_size]
+        batch_features = features[batch_indices]
+        batch_labels = labels[batch_indices]
+        
+        optimizer.zero_grad()
+        logits = head(batch_features)
+        loss = loss_fn(logits, batch_labels)
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item() * batch_indices.size(0)
+    
+    return total_loss / num_samples
+
+
+def validate_classification(
+    head: nn.Module,
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    loss_fn: nn.Module,
+    batch_size: int = 32
+) -> float:
+    """Validate for classification task"""
+    head.eval()
+    total_loss = 0.0
+    num_samples = features.size(0)
+    
+    with torch.no_grad():
+        for i in range(0, num_samples, batch_size):
+            batch_features = features[i:i+batch_size]
+            batch_labels = labels[i:i+batch_size]
+            
+            logits = head(batch_features)
+            loss = loss_fn(logits, batch_labels)
+            
+            total_loss += loss.item() * batch_features.size(0)
+    
+    return total_loss / num_samples
+
+
 def train_with_suspension(
-    head: BinarySegmentationHead,
-    train_data: List[Dict],
-    test_data: List[Dict],
+    head: nn.Module,
+    train_data: List[Dict] | None,
+    test_data: List[Dict] | None,
     session_dir: Path,
     current_file_id: int,
     major_version: int,
@@ -335,7 +392,11 @@ def train_with_suspension(
     early_stop_threshold: float = 0.001,
     max_epochs: int = 1000,
     learning_rate: float = 1e-3,
-    batch_size: int = None
+    batch_size: int = None,
+    task_type: str = "segmentation",
+    train_ids: List[int] = None,
+    test_ids: List[int] = None,
+    config: dict = None
 ) -> Tuple[bool, int, float]:
     """
     Train with periodic suspension for inference
@@ -364,6 +425,18 @@ def train_with_suspension(
     optimizer = torch.optim.Adam(head.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     db_path = session_dir / "annotations.db"
+    
+    # Load data for classification if needed
+    if task_type == "classification" and train_data is None:
+        from data_loader import load_classification_data
+        print("Loading classification data...")
+        train_features, train_labels = load_classification_data(train_ids, session_dir, config)
+        test_features, test_labels = load_classification_data(test_ids, session_dir, config)
+        # Move to device
+        train_features = train_features.to(device)
+        train_labels = train_labels.to(device)
+        test_features = test_features.to(device)
+        test_labels = test_labels.to(device)
     
     # Auto-detect batch size based on device
     if batch_size is None:
@@ -410,53 +483,58 @@ def train_with_suspension(
         except:
             pass  # Keep features on CPU if preloading fails
     
-    # Calculate class weights for balanced training
-    class_weights = calculate_class_weights(train_data, device)
-    
-    # Diagnostic: Check for point collisions across all training data
-    total_original = 0
-    total_deduplicated = 0
-    total_conflicts = 0
-    for sample in train_data:
-        _, _, _, stats = deduplicate_masks(
-            sample['label_mask'],
-            sample['target_mask'],
-            sample['points'],
-            class_weights
-        )
-        total_original += stats['original']
-        total_deduplicated += stats['deduplicated']
-        total_conflicts += stats['conflicts']
-    
-    if total_original > total_deduplicated:
-        print(f"\n⚠️  Point Collision Warning:")
-        print(f"  Original points: {total_original}")
-        print(f"  After deduplication: {total_deduplicated} ({total_original - total_deduplicated} duplicates removed)")
-        print(f"  Conflicting labels: {total_conflicts} locations")
-        if total_conflicts > 0:
-            print(f"  (Conflicts resolved using soft labels: average of conflicting classes)")
-        print()
+    # Segmentation-specific setup
+    if task_type == "segmentation":
+        # Calculate class weights for balanced training
+        class_weights = calculate_class_weights(train_data, device)
+        
+        # Diagnostic: Check for point collisions across all training data
+        total_original = 0
+        total_deduplicated = 0
+        total_conflicts = 0
+        for sample in train_data:
+            _, _, _, stats = deduplicate_masks(
+                sample['label_mask'],
+                sample['target_mask'],
+                sample['points'],
+                class_weights
+            )
+            total_original += stats['original']
+            total_deduplicated += stats['deduplicated']
+            total_conflicts += stats['conflicts']
+        
+        if total_original > total_deduplicated:
+            print(f"\n⚠️  Point Collision Warning:")
+            print(f"  Original points: {total_original}")
+            print(f"  After deduplication: {total_deduplicated} ({total_original - total_deduplicated} duplicates removed)")
+            print(f"  Conflicting labels: {total_conflicts} locations")
+            if total_conflicts > 0:
+                print(f"  (Conflicts resolved using soft labels: average of conflicting classes)")
+            print()
+    else:
+        class_weights = None
     
     for epoch in range(max_epochs):
         # Check for stop signal
         if check_stop_signal(db_path):
             print(f"\n[Epoch {epoch}] Stop signal received. Terminating training.")
             
-            # Generate final prediction before stopping
-            print(f"\nGenerating final prediction before stop...")
-            try:
-                minor_version += 1
-                version_str = f"{major_version}.{minor_version}"
-                
-                mask_path = predict_full_image(
-                    head, current_file_id, session_dir, version_str, device
-                )
-                print(f"  Generated final prediction: {mask_path.name}")
-                
-                # Notify frontend via HTTP
-                notify_prediction_ready(current_file_id, version_str)
-            except Exception as e:
-                print(f"  Error generating final prediction: {e}")
+            # Generate final prediction before stopping (segmentation only)
+            if task_type == "segmentation":
+                print(f"\nGenerating final prediction before stop...")
+                try:
+                    minor_version += 1
+                    version_str = f"{major_version}.{minor_version}"
+                    
+                    mask_path = predict_full_image(
+                        head, current_file_id, session_dir, version_str, device
+                    )
+                    print(f"  Generated final prediction: {mask_path.name}")
+                    
+                    # Notify frontend via HTTP
+                    notify_prediction_ready(current_file_id, version_str)
+                except Exception as e:
+                    print(f"  Error generating final prediction: {e}")
             
             return True, minor_version, best_test_loss
         
@@ -469,24 +547,29 @@ def train_with_suspension(
             version_str = f"{major_version}.{minor_version}"
             
             # Save checkpoint
+            from task_factory import get_checkpoint_prefix
             checkpoint_dir = session_dir / "checkpoints"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = checkpoint_dir / f"binary_seg_head_v{version_str.replace('.', '_')}.pth"
+            checkpoint_prefix = get_checkpoint_prefix(task_type)
+            checkpoint_path = checkpoint_dir / f"{checkpoint_prefix}_v{version_str.replace('.', '_')}.pth"
             torch.save(head.state_dict(), checkpoint_path)
             print(f"  Saved checkpoint: {checkpoint_path.name}")
             
-            # Run inference on current file
-            try:
-                mask_path = predict_full_image(
-                    head, current_file_id, session_dir, version_str, device
-                )
-                print(f"  Generated prediction: {mask_path.name}")
+            # Run inference on current file (segmentation only)
+            if task_type == "segmentation":
+                try:
+                    mask_path = predict_full_image(
+                        head, current_file_id, session_dir, version_str, device
+                    )
+                    print(f"  Generated prediction: {mask_path.name}")
+                    
+                    # Notify frontend via HTTP
+                    notify_prediction_ready(current_file_id, version_str)
                 
-                # Notify frontend via HTTP
-                notify_prediction_ready(current_file_id, version_str)
-            
-            except Exception as e:
-                print(f"  Error during inference: {e}")
+                except Exception as e:
+                    print(f"  Error during inference: {e}")
+            else:
+                print(f"  Skipping inference for classification task")
             
             # Check for stop signal again after inference
             if check_stop_signal(db_path):
@@ -495,11 +578,17 @@ def train_with_suspension(
             
             print(f"  Resuming training...\n")
         
-        # Train one epoch with class balancing
-        train_loss = train_epoch(head, train_data, optimizer, device, class_weights, batch_size)
-        
-        # Validate
-        test_loss = validate(head, test_data, device, val_batch_size)
+        # Train one epoch
+        if task_type == "segmentation":
+            train_loss = train_epoch(head, train_data, optimizer, device, class_weights, batch_size)
+            test_loss = validate(head, test_data, device, val_batch_size)
+        elif task_type == "classification":
+            from task_factory import create_loss_fn
+            loss_fn = create_loss_fn(task_type)
+            train_loss = train_classification_epoch(head, train_features, train_labels, optimizer, loss_fn, batch_size)
+            test_loss = validate_classification(head, test_features, test_labels, loss_fn, val_batch_size)
+        else:
+            raise ValueError(f"Unknown task type: {task_type}")
         
         # Send metrics to backend for storage and WebSocket broadcast
         version_str = f"{major_version}.{minor_version}"
@@ -520,42 +609,44 @@ def train_with_suspension(
             print(f"\n[Epoch {epoch}] Early stopping triggered. Test loss did not improve for {early_stop_patience} checks.")
             print(f"Best test loss: {best_test_loss:.4f}")
             
-            # Generate final prediction before returning
-            print(f"\nGenerating final prediction...")
-            try:
-                minor_version += 1
-                version_str = f"{major_version}.{minor_version}"
-                
-                mask_path = predict_full_image(
-                    head, current_file_id, session_dir, version_str, device
-                )
-                print(f"  Generated final prediction: {mask_path.name}")
-                
-                # Notify frontend via HTTP
-                notify_prediction_ready(current_file_id, version_str)
-            except Exception as e:
-                print(f"  Error generating final prediction: {e}")
+            # Generate final prediction before returning (segmentation only)
+            if task_type == "segmentation":
+                print(f"\nGenerating final prediction...")
+                try:
+                    minor_version += 1
+                    version_str = f"{major_version}.{minor_version}"
+                    
+                    mask_path = predict_full_image(
+                        head, current_file_id, session_dir, version_str, device
+                    )
+                    print(f"  Generated final prediction: {mask_path.name}")
+                    
+                    # Notify frontend via HTTP
+                    notify_prediction_ready(current_file_id, version_str)
+                except Exception as e:
+                    print(f"  Error generating final prediction: {e}")
             
             return True, minor_version, best_test_loss
     
     print(f"\n[Epoch {max_epochs}] Reached maximum epochs.")
     print(f"Best test loss: {best_test_loss:.4f}")
     
-    # Generate final prediction before returning
-    print(f"\nGenerating final prediction...")
-    try:
-        minor_version += 1
-        version_str = f"{major_version}.{minor_version}"
-        
-        mask_path = predict_full_image(
-            head, current_file_id, session_dir, version_str, device
-        )
-        print(f"  Generated final prediction: {mask_path.name}")
-        
-        # Notify frontend via HTTP
-        notify_prediction_ready(current_file_id, version_str)
-    except Exception as e:
-        print(f"  Error generating final prediction: {e}")
+    # Generate final prediction before returning (segmentation only)
+    if task_type == "segmentation":
+        print(f"\nGenerating final prediction...")
+        try:
+            minor_version += 1
+            version_str = f"{major_version}.{minor_version}"
+            
+            mask_path = predict_full_image(
+                head, current_file_id, session_dir, version_str, device
+            )
+            print(f"  Generated final prediction: {mask_path.name}")
+            
+            # Notify frontend via HTTP
+            notify_prediction_ready(current_file_id, version_str)
+        except Exception as e:
+            print(f"  Error generating final prediction: {e}")
     
     return False, minor_version, best_test_loss
 

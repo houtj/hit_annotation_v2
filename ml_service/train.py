@@ -3,17 +3,22 @@
 
 import sqlite3
 import time
+import json
 from pathlib import Path
 from datetime import datetime
 import torch
 
-from model import BinarySegmentationHead
 from data_loader import (
     load_human_labeled_files,
-    load_training_data,
     split_train_test
 )
 from training_loop import train_with_suspension
+from task_factory import (
+    create_model_head,
+    create_loss_fn,
+    load_training_data_for_task,
+    get_checkpoint_prefix
+)
 
 
 def load_config(db_path: Path) -> dict:
@@ -31,6 +36,11 @@ def load_config(db_path: Path) -> dict:
     
     cursor.execute("SELECT key, value FROM config")
     config = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    # Also load classes
+    cursor.execute("SELECT classname, color FROM classes")
+    classes = [{"name": row[0], "color": row[1]} for row in cursor.fetchall()]
+    config["classes"] = classes
     
     conn.close()
     return config
@@ -152,9 +162,14 @@ def main():
     checkpoint_dir = session_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
+    # Load config to get task type
+    initial_config = load_config(db_path)
+    task_type = initial_config.get('task', 'segmentation')
+    
     print("=" * 70)
-    print("ML SERVICE - BINARY SEGMENTATION TRAINING")
+    print(f"ML SERVICE - {task_type.upper()} TRAINING")
     print("=" * 70)
+    print(f"Task type: {task_type}")
     print(f"Session directory: {session_dir.absolute()}")
     print(f"Database: {db_path.absolute()}")
     print(f"Checkpoints: {checkpoint_dir.absolute()}")
@@ -248,22 +263,36 @@ def main():
             print(f"  Train files: {len(train_ids)}")
             print(f"  Test files: {len(test_ids)}")
             
-            # Load data
-            print(f"\n Loading features and labels...")
-            train_data = load_training_data(train_ids, session_dir)
-            test_data = load_training_data(test_ids, session_dir)
-            print(f"  Train samples: {len(train_data)}")
-            print(f"  Test samples: {len(test_data)}")
+            # Load data based on task type
+            print(f"\nLoading features and labels...")
+            task_type = config.get('task', 'segmentation')
             
-            if len(train_data) == 0 or len(test_data) == 0:
-                print("  Error: No valid training or test data")
+            if task_type == "segmentation":
+                from data_loader import load_training_data
+                train_data = load_training_data(train_ids, session_dir)
+                test_data = load_training_data(test_ids, session_dir)
+                print(f"  Train samples: {len(train_data)}")
+                print(f"  Test samples: {len(test_data)}")
+                
+                if len(train_data) == 0 or len(test_data) == 0:
+                    print("  Error: No valid training or test data")
+                    update_model_version_record(db_path, version_str, "failed")
+                    update_config(db_path, 'training_trigger', '0')
+                    continue
+            elif task_type == "classification":
+                # For classification, we get batched tensors directly
+                train_data, test_data = None, None  # Will be loaded in training loop
+                print(f"  Train files: {len(train_ids)}")
+                print(f"  Test files: {len(test_ids)}")
+            else:
+                print(f"  Error: Unknown task type: {task_type}")
                 update_model_version_record(db_path, version_str, "failed")
                 update_config(db_path, 'training_trigger', '0')
                 continue
             
-            # Initialize or load model
+            # Initialize or load model using task factory
             print(f"\nInitializing model...")
-            head = BinarySegmentationHead(in_channels=384)
+            head = create_model_head(task_type, config, device)
             
             # Count parameters
             total_params = sum(p.numel() for p in head.parameters())
@@ -272,7 +301,8 @@ def main():
             print(f"  Trainable parameters: {trainable_params:,}")
             
             # Try to load latest checkpoint for warm start
-            latest_checkpoint = checkpoint_dir / "binary_seg_head_latest.pth"
+            checkpoint_prefix = get_checkpoint_prefix(task_type)
+            latest_checkpoint = checkpoint_dir / f"{checkpoint_prefix}_latest.pth"
             if latest_checkpoint.exists():
                 try:
                     head.load_state_dict(torch.load(latest_checkpoint, map_location='cpu'), strict=True)
@@ -283,7 +313,6 @@ def main():
             else:
                 print(f"  Starting from scratch (no checkpoint found)")
             
-            head = head.to(device)
             print(f"  Model initialized on {device}")
             
             # Training loop with suspension
@@ -300,7 +329,11 @@ def main():
                 early_stop_patience=early_stop_patience,
                 early_stop_threshold=early_stop_threshold,
                 max_epochs=1000,
-                learning_rate=1e-3
+                learning_rate=1e-3,
+                task_type=task_type,
+                train_ids=train_ids,
+                test_ids=test_ids,
+                config=config
             )
             
             # Save final checkpoint

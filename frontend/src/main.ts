@@ -2,7 +2,7 @@
  * Main entry point for the application
  */
 
-import { isLoggedIn } from './shared/state';
+import { isLoggedIn, appState } from './shared/state';
 import { renderWelcomeView, attachWelcomeListeners } from './pages/welcome/WelcomeView';
 import { renderFilesView } from './pages/files/FilesView';
 import { renderLabelingView, cleanupLabelingView } from './pages/labeling/LabelingView';
@@ -13,6 +13,9 @@ console.log('Active Learning Annotation Tool Starting...');
 // Initialize the application
 async function init() {
   try {
+    // Initialize app state (load task type from backend)
+    await appState.initialize();
+    
     // Check if user is logged in
     if (isLoggedIn()) {
       await showFilesPage();

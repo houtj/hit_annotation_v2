@@ -1,6 +1,7 @@
 """Data loading utilities for training"""
 
 import sqlite3
+import json
 from pathlib import Path
 from typing import List, Tuple, Dict
 import numpy as np
@@ -314,4 +315,86 @@ def load_training_data(
             continue
     
     return training_data
+
+
+def load_classification_data(
+    file_ids: List[int],
+    session_dir: Path,
+    config: dict
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Load data for classification task (image-level labels)
+    
+    Args:
+        file_ids: List of file IDs with human labels
+        session_dir: Path to session directory
+        config: Configuration dictionary with class definitions
+    
+    Returns:
+        Tuple of (features, labels)
+        - features: torch.Tensor of shape (B, 384, H, W) - full feature maps
+        - labels: torch.Tensor of shape (B,) - class indices
+    """
+    db_path = session_dir / "annotations.db"
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Build class name to index mapping
+    class_names = [cls["name"] for cls in config.get("classes", [])]
+    if not class_names:
+        raise ValueError("No classes defined in config")
+    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    
+    features_list = []
+    labels_list = []
+    
+    for file_id in file_ids:
+        try:
+            # Load label data
+            cursor.execute(
+                "SELECT label_data FROM labels WHERE file_id = ?",
+                (file_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                continue
+            
+            label_data = json.loads(row[0])
+            
+            # Find class label (should be single class label for classification)
+            class_label = None
+            for item in label_data:
+                if item.get("type") == "class" and item.get("origin") == "human":
+                    class_label = item.get("classname")
+                    break
+            
+            if class_label is None:
+                # No human class label for this file
+                continue
+            
+            if class_label not in class_to_idx:
+                print(f"Warning: Unknown class '{class_label}' for file {file_id}, skipping")
+                continue
+            
+            # Load features
+            features, _, _ = load_features(file_id, session_dir)
+            
+            # Add to lists
+            features_list.append(features)
+            labels_list.append(class_to_idx[class_label])
+            
+        except Exception as e:
+            print(f"Warning: Failed to load file {file_id}: {e}")
+            continue
+    
+    conn.close()
+    
+    if len(features_list) == 0:
+        raise ValueError("No valid classification training data found")
+    
+    # Stack into batches
+    features_batch = torch.stack(features_list)  # (B, 384, H, W)
+    labels_batch = torch.tensor(labels_list, dtype=torch.long)  # (B,)
+    
+    return features_batch, labels_batch
 

@@ -1,33 +1,41 @@
 # Active Learning Image Annotation Tool
 
+A flexible active learning annotation tool supporting both **segmentation** and **classification** tasks.
+
+## Supported Tasks
+
+### 1. Segmentation (Dip Picking)
+- Point-based annotation for binary segmentation
+- Automatic point extraction from predictions
+- Suitable for geological dip picking, line detection, etc.
+
+### 2. Classification
+- Image-level class labels
+- Multi-class support (e.g., animal, car, human, other)
+- Simple click-to-classify interface
+
 ## Quick Start
 
 ### Initialize Session (First Time)
 
-**Basic usage (images only):**
+**Segmentation Task (Dip Picking):**
 ```bash
 cd initialization
-PYTHONPATH=.. uv run python init_session.py --image-dir /path/to/images --formats jpg,png
+uv run python init_session.py --config dip_picking_config.yaml
 ```
 
-**With labels import:**
+**Classification Task:**
 ```bash
 cd initialization
-PYTHONPATH=.. uv run python init_session.py \
-  --image-dir ../data/hitl_data/condabri_north_349/images \
-  --formats png \
-  --labels-dir ../data/hitl_data/condabri_north_349_point_labels
+uv run python init_session.py --config classification_config.yaml
 ```
 
-**With file limit (useful for testing with large datasets):**
-```bash
-cd initialization
-PYTHONPATH=.. uv run python init_session.py \
-  --image-dir ../data/hitl_data/condabri_north_349/images \
-  --formats png \
-  --labels-dir ../data/hitl_data/condabri_north_349_point_labels \
-  --max-files 50
-```
+**Custom configuration:**
+Edit the YAML config files to specify:
+- Task type (`task: "segmentation"` or `task: "classification"`)
+- Image directory and formats
+- Classes and colors
+- Training parameters
 
 ### Frontend (Development)
 ```bash
@@ -79,9 +87,29 @@ active_annotation/
 
 ## How It Works
 
-1. **Initialization**: Run `init_session.py` to create database, convert images to `.npy`, and extract DINOv3 features
+### Segmentation Workflow
+1. **Initialization**: Run `init_session.py` with segmentation config
 2. **Annotation**: Use the web interface to annotate images with point labels (foreground/background)
-3. **Training**: Click "Save" to trigger ML training. The service trains a binary segmentation head on DINOv3 features
-4. **Prediction**: During training, the model periodically generates predictions on the current image
-5. **Iteration**: View predictions overlaid on images, refine labels, and retrain
+3. **Training**: Click "Save" to trigger ML training on point-based labels
+4. **Prediction**: Model generates segmentation masks periodically during training
+5. **Point Extraction**: Extract points from predictions for active learning
+6. **Iteration**: Refine labels and retrain
+
+### Classification Workflow
+1. **Initialization**: Run `init_session.py` with classification config
+2. **Annotation**: Select a class for each image using the class selector
+3. **Training**: Click "Save" to trigger ML training on image-level labels
+4. **Prediction**: Model predicts class and confidence for images
+5. **Iteration**: Review predictions, correct labels, and retrain
+
+## Configuration Files
+
+- `initialization/dip_picking_config.yaml` - Segmentation task configuration
+- `initialization/classification_config.yaml` - Classification task configuration
+
+Key parameters:
+- `task`: Task type ("segmentation" or "classification")
+- `image_dir`: Path to images
+- `classes`: List of classes with names and colors
+- `prediction_interval`, `early_stop_patience`: Training parameters
 
